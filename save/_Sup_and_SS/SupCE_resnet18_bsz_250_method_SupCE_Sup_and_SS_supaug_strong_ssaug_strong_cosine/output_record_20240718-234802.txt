@@ -1,0 +1,11 @@
+Loader_mode: Fully Supervised Training; Augment_type: strong.
+Files already downloaded and verified
+Files already downloaded and verified
+Loader_mode: Test; Augment_type: no.
+Files already downloaded and verified
+Files already downloaded and verified
+Loader_mode: Test; Augment_type: no.
+Files already downloaded and verified
+Files already downloaded and verified
+Softmax is added after the MLP classifier.
+Successfully load model from checkpoints/resnet18_SimCLR_mlp.pth. Every key matches exactly.

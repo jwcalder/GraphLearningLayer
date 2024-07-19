@@ -1,0 +1,9 @@
+torch==2.1.1+cu121
+numpy~=1.20.0
+torchvision==0.16.1+cu121
+pillow~=8.4.0
+graphlearning~=1.6.9
+scipy~=1.9.3
+matplotlib~=3.4.3
+umap~=0.1.1
+scikit-learn~=0.24.2
