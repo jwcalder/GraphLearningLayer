@@ -20,7 +20,7 @@ from scipy.sparse.csgraph import connected_components
 from scipy.sparse.linalg import eigsh
 
 from networks.BuildNet import buildnet, model_dict
-from networks.preact_resnet import PreActResNet18
+from networks.preact_resnet_adversarial import PreActResNet18
 import sys
 
 class LaplaceLearningSparseHard(torch.autograd.Function):

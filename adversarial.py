@@ -23,7 +23,7 @@ import sys
 from torch.autograd import Variable
 
 from networks.BuildNet import buildnet, model_dict
-from networks.preact_resnet import PreActResNet18
+from networks.preact_resnet_adversarial import PreActResNet18
 
 class LaplaceLearningSparseHard(torch.autograd.Function):
     # Assume that the first k entries are the labelled data vectors and the rest are unlabelled

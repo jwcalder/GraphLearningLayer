@@ -121,3 +121,87 @@ class ResNet(nn.Module):
         out = self.avgpool(out)
         out = torch.flatten(out, 1)
         return out
+    
+def resnet18(**kwargs):
+    return ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
+
+def resnet34(**kwargs):
+    return ResNet(BasicBlock, [3, 4, 6, 3], **kwargs)
+
+def resnet50(**kwargs):
+    return ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
+
+def resnet101(**kwargs):
+    return ResNet(Bottleneck, [3, 4, 23, 3], **kwargs)
+
+# ===== CIFAR-specific (3-stage) ResNet for 20/32/44/56/110 =====
+class CIFARResNet(nn.Module):
+    """CIFAR-style ResNet: 3 stages (16->32->64), no initial max-pooling.
+    The network returns a global-average-pooled feature vector for downstream heads."""
+    def __init__(self, block, num_blocks, in_channel=3, zero_init_residual=False):
+        super().__init__()
+        assert len(num_blocks) == 3, "CIFARResNet expects [n1, n2, n3] for 3 stages."
+        self.in_planes = 16
+
+        # CIFAR stem: 3x3 conv, stride=1, no pooling
+        self.conv1 = nn.Conv2d(in_channel, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(16)
+
+        # 3 stages: 16 -> 32 -> 64 (downsample at stage 2 and 3)
+        self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
+        # Parameter initialization policy (keeps parity with the 4-stage ResNet above)
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+        # Optional: zero-initialize the last BN in residual branches
+        if zero_init_residual:
+            for m in self.modules():
+                if isinstance(m, Bottleneck):
+                    nn.init.constant_(m.bn3.weight, 0)
+                elif isinstance(m, BasicBlock):
+                    nn.init.constant_(m.bn2.weight, 0)
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        """Build one stage. Downsample happens in the first block if stride > 1."""
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for s in strides:
+            layers.append(block(self.in_planes, planes, s))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        # Return pooled features for the MLP head
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.avgpool(out)
+        out = torch.flatten(out, 1)
+        return out
+
+
+# ---- CIFAR builders: depth = 6n + 2  => n blocks per stage
+def resnet20(**kwargs):   # n = 3
+    return CIFARResNet(BasicBlock, [3, 3, 3], **kwargs)
+
+def resnet32(**kwargs):   # n = 5
+    return CIFARResNet(BasicBlock, [5, 5, 5], **kwargs)
+
+def resnet44(**kwargs):   # n = 7
+    return CIFARResNet(BasicBlock, [7, 7, 7], **kwargs)
+
+def resnet56(**kwargs):   # n = 9
+    return CIFARResNet(BasicBlock, [9, 9, 9], **kwargs)
+
+def resnet110(**kwargs):  # n = 18
+    return CIFARResNet(BasicBlock, [18, 18, 18], **kwargs)

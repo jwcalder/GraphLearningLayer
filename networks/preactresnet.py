@@ -109,3 +109,43 @@ def PreActResNet101(num_classes):
 
 def PreActResNet152(num_classes):
     return PreActResNet(PreActBottleneck, [3,8,36,3],num_classes)
+
+# --- Preact wrappers ---
+class _PreactFeatureBackbone(nn.Module):
+    """Wrap a PreActResNet to return only the pooled feature vector.
+    This makes it compatible with buildnet which expects encoder(x) -> feat."""
+    def __init__(self, net):
+        super().__init__()
+        self.net = net
+
+    def forward(self, x):
+        # PreActResNet returns (logits, feat); we only need the features here.
+        _, feat = self.net(x)
+        return feat
+
+
+def preactresnet18(**kwargs):
+    """Feature-only PreActResNet-18 backbone (returns 512-dim features)."""
+    num_classes = kwargs.get("num_classes", 10)
+    return _PreactFeatureBackbone(PreActResNet18(num_classes))
+
+def preactresnet34(**kwargs):
+    """Feature-only PreActResNet-34 backbone (returns 512-dim features)."""
+    num_classes = kwargs.get("num_classes", 10)
+    return _PreactFeatureBackbone(PreActResNet34(num_classes))
+
+def preactresnet50(**kwargs):
+    """Feature-only PreActResNet-50 backbone (returns 2048-dim features)."""
+    num_classes = kwargs.get("num_classes", 10)
+    return _PreactFeatureBackbone(PreActResNet50(num_classes))
+
+def preactresnet101(**kwargs):
+    """Feature-only PreActResNet-101 backbone (returns 2048-dim features)."""
+    num_classes = kwargs.get("num_classes", 10)
+    return _PreactFeatureBackbone(PreActResNet101(num_classes))
+
+def preactresnet152(**kwargs):
+    """Feature-only PreActResNet-152 backbone (returns 2048-dim features)."""
+    num_classes = kwargs.get("num_classes", 10)
+    return _PreactFeatureBackbone(PreActResNet152(num_classes))
+# --- end Preact wrappers ---

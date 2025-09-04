@@ -81,6 +81,8 @@ def parse_option():
     # method
     parser.add_argument('--sup_method', type=str, default='SupCE',
                         choices=['SupCE', 'SupCon'], help='choose method')
+    parser.add_argument('--pretrain_method', type=str, default='SimCLR',
+                        choices=['SimCLR', 'SupCon'], help='choose method')
     parser.add_argument('--embedding_dim', type=int, default=128,
                         help='dimension of latent features')
     parser.add_argument('--head_type', type=str, default='mlp',
@@ -204,5 +206,34 @@ def parse_option():
     print("save_folder: {}".format(opt.save_folder))
     if not os.path.isdir(opt.save_folder):
         os.makedirs(opt.save_folder)
+
+    # Auto-distributed config (no new CLI flags)
+    opt.world_size = 1
+    opt.rank = 0
+    opt.local_rank = 0
+    opt.distributed = False
+
+    if opt.dev == 'cuda' and torch.cuda.is_available():
+        num_gpus = torch.cuda.device_count()
+        if num_gpus > 1:
+            # Use DDP when multiple GPUs are available
+            opt.distributed = True
+            opt.world_size = num_gpus
+
+            # Split global batch sizes across GPUs
+            assert opt.batch_size % opt.world_size == 0, \
+                f"batch_size ({opt.batch_size}) must be divisible by number of GPUs ({opt.world_size})"
+            assert opt.test_batch_size % opt.world_size == 0, \
+                f"test_batch_size ({opt.test_batch_size}) must be divisible by number of GPUs ({opt.world_size})"
+
+            opt.batch_size_per_gpu = opt.batch_size // opt.world_size
+            opt.test_batch_size_per_gpu = opt.test_batch_size // opt.world_size
+        else:
+            opt.batch_size_per_gpu = opt.batch_size
+            opt.test_batch_size_per_gpu = opt.test_batch_size
+    else:
+        # CPU or no CUDA
+        opt.batch_size_per_gpu = opt.batch_size
+        opt.test_batch_size_per_gpu = opt.test_batch_size
 
     return opt

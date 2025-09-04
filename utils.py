@@ -281,6 +281,24 @@ class FileLogger(object):
 
 def set_loader(opt, loader_suffix='Sup', augment_type='weak', twoviews=False, p_label=False, train=True,
                score_dataset=False):
+    """
+    Build dataloaders for (base, train) with optional distributed support.
+
+    Key points:
+      - Keep default collate_fn so that when `twoviews=True`, each batch yields:
+            images: [ tensor(B, C, H, W), tensor(B, C, H, W) ]
+            labels: tensor(B)
+        This matches `images = torch.cat([images[0], images[1]], dim=0)` in your train() loop.
+      - Use DistributedSampler when `opt.distributed` is True.
+      - Use per-GPU batch sizes: `opt.batch_size_per_gpu` / `opt.test_batch_size_per_gpu`
+        (fallback to `opt.batch_size` / `opt.test_batch_size` if fields are not set).
+      - Return signatures are unchanged.
+    """
+    import torch
+    from torch.utils.data.distributed import DistributedSampler
+    from torchvision import datasets
+
+    # ----- Dataset config (unchanged) -----
     if opt.dataset == 'cifar10' or opt.dataset == 'cifar100':
         dataset_config = datasets_setting.__dict__[opt.dataset]()
     elif opt.dataset == 'mnist' or opt.dataset == 'fashion_mnist':
@@ -290,91 +308,111 @@ def set_loader(opt, loader_suffix='Sup', augment_type='weak', twoviews=False, p_
 
     weak_transformation = dataset_config['weak_transformation']
     strong_transformation = dataset_config['strong_transformation']
-    eval_transformation = dataset_config['eval_transformation']
-    num_classes = dataset_config['num_classes']
+    eval_transformation  = dataset_config['eval_transformation']
+    num_classes          = dataset_config['num_classes']
 
     print(f'Loader_mode: {loader_suffix}; Augment_type: {augment_type}.')
 
+    # ----- Choose transform by augment_type -----
     if augment_type == 'no':
-        transform = eval_transformation
+        base_transform = eval_transformation
     elif augment_type == 'weak':
-        transform = weak_transformation
+        base_transform = weak_transformation
     else:
-        transform = strong_transformation
+        base_transform = strong_transformation
 
-    # for simclr
-    if twoviews:
-        transform = TwoCropTransform(transform)
+    # For SimCLR: wrap transform to produce two views if requested
+    # TwoCropTransform is already defined in utils.py and returns [view1, view2]
+    transform_for_train = TwoCropTransform(base_transform) if twoviews else base_transform
 
+    # ----- Build torchvision datasets -----
     if opt.dataset == 'cifar10':
-        dataset = datasets.CIFAR10(root=opt.data_folder,
-                                   transform=None,
-                                   train=True,
-                                   download=True)
-        train_dataset = datasets.CIFAR10(root=opt.data_folder,
-                                         transform=transform,
-                                         train=train,
-                                         download=True)
+        base_dataset_tv = datasets.CIFAR10(root=opt.data_folder, transform=None, train=True, download=True)
+        train_dataset   = datasets.CIFAR10(root=opt.data_folder, transform=transform_for_train, train=train, download=True)
+    elif opt.dataset == 'cifar100':
+        base_dataset_tv = datasets.CIFAR100(root=opt.data_folder, transform=None, train=True, download=True)
+        train_dataset   = datasets.CIFAR100(root=opt.data_folder, transform=transform_for_train, train=train, download=True)
     elif opt.dataset == 'mnist':
-        dataset = datasets.MNIST(root=opt.data_folder,
-                                 transform=None,
-                                 train=True,
-                                 download=True)
-        train_dataset = datasets.MNIST(root=opt.data_folder,
-                                       transform=transform,
-                                       train=train,
-                                       download=True)
+        base_dataset_tv = datasets.MNIST(root=opt.data_folder, transform=None, train=True, download=True)
+        train_dataset   = datasets.MNIST(root=opt.data_folder, transform=transform_for_train, train=train, download=True)
     elif opt.dataset == 'fashion_mnist':
-        dataset = datasets.FashionMNIST(root=opt.data_folder,
-                                        transform=None,
-                                        train=True,
-                                        download=True)
-
-        train_dataset = datasets.FashionMNIST(root=opt.data_folder,
-                                              transform=transform,
-                                              train=train,
-                                              download=True)
+        base_dataset_tv = datasets.FashionMNIST(root=opt.data_folder, transform=None, train=True, download=True)
+        train_dataset   = datasets.FashionMNIST(root=opt.data_folder, transform=transform_for_train, train=train, download=True)
     else:
         raise ValueError(opt.dataset)
 
+    # ----- Optional downsample for the base dataset (unchanged) -----
     if int(opt.ds_stepsize) > 1:
-        dataset = DSCustomDataset(dataset, int(opt.ds_stepsize))
+        base_dataset_tv = DSCustomDataset(base_dataset_tv, int(opt.ds_stepsize))
 
+    # ----- Per-GPU batch size -----
     if train:
-        batch_size = opt.batch_size
+        batch_size = getattr(opt, 'batch_size_per_gpu', opt.batch_size)
     else:
-        batch_size = opt.test_batch_size
+        batch_size = getattr(opt, 'test_batch_size_per_gpu', opt.test_batch_size)
 
-    base_data, base_labels = sample_dataset(dataset, opt.num_train, class_uniform_sample=opt.class_uni_sample,
-                                            num_classes=num_classes, seed=opt.seed)
-    base_dataset = CustomDataset(base_data,
-                                 base_labels,
-                                 transform=transform)
-
+    # ----- Build base loader (full-batch; no sampler) -----
+    base_data, base_labels = sample_dataset(
+        base_dataset_tv, opt.num_train,
+        class_uniform_sample=opt.class_uni_sample,
+        num_classes=num_classes,
+        seed=opt.seed
+    )
+    base_dataset = CustomDataset(base_data, base_labels, transform=base_transform)
     base_loader = torch.utils.data.DataLoader(
-        base_dataset, batch_size=len(base_dataset), shuffle=True,
-        num_workers=opt.num_workers, pin_memory=True, sampler=None)
+        base_dataset,
+        batch_size=len(base_dataset),
+        shuffle=True,
+        num_workers=opt.num_workers,
+        pin_memory=True,
+        sampler=None
+    )
+
+    # ----- Optionally wrap the train dataset (score / pseudo-label) -----
+    train_ds_for_loader = train_dataset
+    train_dataset_new = None
 
     if score_dataset:
         train_dataset_new = DatasetWithScore(train_dataset, scores=None)
+        train_ds_for_loader = train_dataset_new
+    elif p_label:
+        train_dataset_new = DatasetWithPseudoLabel(
+            train_dataset, pred_outputs=None, pred_labels=None, num_classes=num_classes
+        )
+        train_ds_for_loader = train_dataset_new
 
-        train_loader = torch.utils.data.DataLoader(
-            train_dataset_new, batch_size=batch_size, shuffle=True,
-            num_workers=opt.num_workers, pin_memory=True, sampler=None, drop_last=True)
+    # ----- Distributed sampler for training dataset -----
+    use_dist   = bool(getattr(opt, 'distributed', False))
+    world_size = int(getattr(opt, 'world_size', 1))
+    rank       = int(getattr(opt, 'rank', 0))
+
+    train_sampler = DistributedSampler(train_ds_for_loader,
+                                       num_replicas=world_size,
+                                       rank=rank,
+                                       shuffle=True) if use_dist else None
+
+    # ----- Train loader -----
+    # Keep default collate_fn (None) so images remain a list of two tensors when twoviews=True.
+    train_loader = torch.utils.data.DataLoader(
+        train_ds_for_loader,
+        batch_size=batch_size,
+        shuffle=(train_sampler is None),
+        num_workers=opt.num_workers,
+        pin_memory=True,
+        sampler=train_sampler,
+        drop_last=True,
+        collate_fn=None
+    )
+
+    # ----- Return signatures (unchanged) -----
+    if score_dataset:
         return base_loader, train_loader, train_dataset_new
     elif p_label:
-        train_dataset_new = DatasetWithPseudoLabel(train_dataset, pred_outputs=None,
-                                                   pred_labels=None, num_classes=num_classes)
-
-        train_loader = torch.utils.data.DataLoader(
-            train_dataset_new, batch_size=batch_size, shuffle=True,
-            num_workers=opt.num_workers, pin_memory=True, sampler=None, drop_last=True)
         return base_loader, train_loader, train_dataset_new
     else:
-        train_loader = torch.utils.data.DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=True,
-            num_workers=opt.num_workers, pin_memory=True, sampler=None, drop_last=True)
         return base_loader, train_loader
+
+
 
 def set_loader_sup(opt, loader_mode='Sup', p_label=False):
     '''
@@ -541,16 +579,19 @@ def set_model(opt):
     else:
         print(f"Initize the model with random parameters")
 
-    # criterion = SupConLoss(temperature=opt.temp)
-
-    if torch.cuda.is_available() & (opt.dev != 'cpu'):
-        if torch.cuda.device_count() > 1:  # check for multiple GPU
-            model.encoder = torch.nn.DataParallel(model.encoder)
-        # model = model.cuda()
-        # criterion = criterion.cuda()
+    if torch.cuda.is_available() and (opt.dev != 'cpu'):
         cudnn.benchmark = True
 
-    return model.to(torch.device(opt.dev))  # , criterion
+    device = torch.device('cuda', opt.local_rank) if (opt.dev != 'cpu' and torch.cuda.is_available()) else torch.device(opt.dev)
+    model = model.to(device)
+
+    if getattr(opt, 'distributed', False):
+        # (Optional but recommended) convert BN to SyncBN for contrastive learning
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        # Wrap whole model (not only encoder) for correct gradient sync
+        model = DDP(model, device_ids=[opt.local_rank], output_device=opt.local_rank, find_unused_parameters=False)
+
+    return model
 
 ##### laplace learning
 def one_hot_encode(labels, n_classes='auto'):
