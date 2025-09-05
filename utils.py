@@ -15,6 +15,8 @@ import torch.backends.cudnn as cudnn
 from torchvision import transforms, datasets
 from torch.utils.data import Dataset
 import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP 
 
 ####
 from networks.BuildNet import buildnet
