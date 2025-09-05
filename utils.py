@@ -16,7 +16,7 @@ from torchvision import transforms, datasets
 from torch.utils.data import Dataset
 import torch.nn as nn
 import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP 
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 ####
 from networks.BuildNet import buildnet
@@ -241,9 +241,6 @@ def sample_dataset(dataset, num_samples, class_uniform_sample=False, num_classes
 
 
 def loader_to_numpy(loader, opt, model=None):
-    """
-    将 PyTorch DataLoader 中的数据和标签转换为 NumPy 数组。
-    """
     data_list = []
     label_list = []
 
@@ -554,8 +551,16 @@ def set_model(opt):
     if opt.model == 'customCNN' and (opt.dataset == 'mnist' or opt.dataset == 'fashion_mnist'):
         model = customCNN()
     else:
-        model = buildnet(name=opt.model, head=opt.head_type,
-                         feat_dim=opt.embedding_dim, num_classes=num_classes, softmax=not opt.no_softmax)
+        is_contrastive_pretrain = getattr(opt, "pretrain_method", "") in ["SimCLR", "SupCon"]
+
+        model = buildnet(
+            name=opt.model,
+            head=opt.head_type,
+            feat_dim=opt.embedding_dim,
+            num_classes=num_classes,
+            softmax=not opt.no_softmax,
+            include_classifier=not is_contrastive_pretrain,  # <-- disable classifier for SimCLR pretrain
+        )
 
     # model = SupConResNet(name=opt.model)
     # model = create_model(num_classes, opt)

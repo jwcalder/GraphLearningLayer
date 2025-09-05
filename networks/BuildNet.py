@@ -75,7 +75,8 @@ class LinearBatchNorm(nn.Module):
 
 class buildnet(nn.Module):
     """backbone + projection head"""
-    def __init__(self, name='resnet50', head='mlp', feat_dim=128, num_classes=10, softmax=True):
+    def __init__(self, name='resnet50', head='mlp', feat_dim=128, num_classes=10,
+                 softmax=True, include_classifier=True):
         super(buildnet, self).__init__()
         model_fun, dim_in = model_dict[name]
         needs_num_classes = [
@@ -84,10 +85,11 @@ class buildnet(nn.Module):
             'preactresnet101', 'preactresnet152'
         ]
         if name in needs_num_classes:
-            # For PreActResNet wrappers, this will reach the wrapper and be forwarded.
             self.encoder = model_fun(num_classes=num_classes)
         else:
             self.encoder = model_fun()
+
+        # projection head
         if head == 'linear':
             self.head = nn.Linear(dim_in, feat_dim)
         elif head == 'mlp':
@@ -99,24 +101,38 @@ class buildnet(nn.Module):
         elif head == 'no':
             self.head = nn.Identity()
         else:
-            raise NotImplementedError(
-                'head not supported: {}'.format(head))
-        self.linear = nn.Sequential(
-            nn.Linear(feat_dim, 32),
-            nn.ReLU(inplace=True),
-            nn.Linear(32, num_classes)
-        )
-        self.softmax = softmax
-        if softmax:
+            raise NotImplementedError('head not supported: {}'.format(head))
+
+        # classifier head (optional for contrastive pretrain)
+        self.include_classifier = include_classifier
+        if include_classifier:
+            self.linear = nn.Sequential(
+                nn.Linear(feat_dim, 32),
+                nn.ReLU(inplace=True),
+                nn.Linear(32, num_classes)
+            )
+        else:
+            # Identity avoids tracking any extra trainable parameters
+            self.linear = nn.Identity()
+
+        # Only apply softmax if classifier is present
+        self.softmax = (softmax and include_classifier)
+        if self.softmax:
             print("Softmax is added after the MLP classifier.")
 
     def forward(self, x):
         feat = self.encoder(x)
         feat = self.head(feat)
-        pred = self.linear(feat)
-        if self.softmax:
-            pred = F.softmax(pred, dim=1)
-        return pred, F.normalize(feat, dim=1)
 
+        # Only compute class logits when classifier is included
+        if self.include_classifier:
+            pred = self.linear(feat)
+            if self.softmax:
+                pred = F.softmax(pred, dim=1)
+        else:
+            # Keep the (pred, features) return signature for caller convenience
+            pred = None
+
+        return pred, F.normalize(feat, dim=1)
 
 
