@@ -13,7 +13,7 @@ import torch.multiprocessing as mp
 import matplotlib.pyplot as plt
 
 from utils import adjust_learning_rate, warmup_learning_rate, AverageMeter
-from utils import set_optimizer, save_model
+from utils import set_optimizer, save_model, print_model_param_stats
 from utils import set_loader, set_model
 from losses import SupConLoss
 from config.cli import parse_option
@@ -128,22 +128,15 @@ def main_worker(local_rank, opt):
     optimizer = set_optimizer(opt, model)
     criterion = SupConLoss(temperature=opt.temp)
 
-    # Print model size only on rank 0
-    if not getattr(opt, 'distributed', False) or opt.rank == 0:
-        total_params = sum(p.numel() for p in model.parameters())
-        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print(f"Total params: {total_params:,}")
-        print(f"Trainable params: {trainable_params:,}")
-        try:
-            bytes_per_param = next(model.parameters()).element_size()
-            print(f"Approx param memory: {total_params * bytes_per_param / (1024**2):.2f} MB")
-        except StopIteration:
-            print("Model has no parameters.")
+    # Print model/encoder/head parameter stats only on rank 0
+    is_master = (not getattr(opt, "distributed", False)) or (getattr(opt, "rank", 0) == 0)
+
+    if is_master:
+        print_model_param_stats(model, encoder_attr_name="encoder")
 
     # Training
     train_loss_record = []
     for epoch in range(1, opt.epochs + 1):
-        # Let DistributedSampler reshuffle
         if getattr(opt, 'distributed', False) and hasattr(train_loader.sampler, 'set_epoch'):
             train_loader.sampler.set_epoch(epoch)
 
@@ -152,13 +145,15 @@ def main_worker(local_rank, opt):
         if (not getattr(opt, 'distributed', False)) or (opt.rank == 0):
             print(f'Epoch {epoch}, Loss {loss:.4f}')
             train_loss_record.append(loss)
-            # Optional save every N epochs if you later re-enable opt.save_freq
-            # if getattr(opt, "save_freq", 0) and epoch % opt.save_freq == 0:
 
-    # Save the last model only on rank 0
     if (not getattr(opt, 'distributed', False)) or (opt.rank == 0):
-        save_file = os.path.join(opt.save_folder, 'last.pth')
-        save_model(model, optimizer, opt, opt.epochs, save_file)
+        print(f'Epoch {epoch}, Loss {loss:.4f}')
+        train_loss_record.append(loss)
+
+        # Save checkpoint periodically
+        if getattr(opt, 'save_freq', None) is not None and opt.save_freq > 0 and (epoch % opt.save_freq == 0):
+            ckpt_path = os.path.join(opt.save_folder, f'ckpt_epoch_{epoch}.pth')
+            save_model(model, optimizer, opt, epoch, ckpt_path)
 
     if getattr(opt, 'distributed', False):
         dist.destroy_process_group()

@@ -17,10 +17,10 @@ def parse_option():
 
     parser.add_argument('--print_freq_sup', type=int, default=1,
                         help='print frequency')
-    parser.add_argument('--print_freq_ss', type=int, default=10,
+    parser.add_argument('--print_freq_ss', type=int, default=25,
                         help='print frequency')
-    # parser.add_argument('--save_freq', type=int, default=10,
-    #                     help='save frequency')
+    parser.add_argument('--save_freq', type=int, default=50,
+                        help='save frequency')
     parser.add_argument('--plot_freq_sup', type=int, default=15,
                         help='plot frequency for supervised training-- deprecated')
     parser.add_argument('--plot_freq_ss', type=int, default=15,
@@ -31,7 +31,7 @@ def parse_option():
                         help='batch_size for test set')
     parser.add_argument('--num_workers', type=int, default=1,
                         help='num of workers to use')
-    parser.add_argument('--epochs', type=int, default=50,
+    parser.add_argument('--epochs', type=int, default=1000,
                         help='number of training epochs')
     parser.add_argument('--cp_load_path', type=str, default='no',
                         help='path to the checkpoint. no means to train from scratch.')

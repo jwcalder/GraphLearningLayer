@@ -551,7 +551,8 @@ def set_model(opt):
     if opt.model == 'customCNN' and (opt.dataset == 'mnist' or opt.dataset == 'fashion_mnist'):
         model = customCNN()
     else:
-        is_contrastive_pretrain = getattr(opt, "pretrain_method", "") in ["SimCLR", "SupCon"]
+        is_contrastive_pretrain = getattr(opt, "pretrain_method", "") in ["SimCLR", "SupCon"] \
+                                    and getattr(opt, 'distributed', False)
 
         model = buildnet(
             name=opt.model,
@@ -862,3 +863,107 @@ class DatasetWithScore(Dataset):
     def __getitem__(self, index):
         data, label = self.original_dataset[index]
         return index, data, label
+    
+    
+### print model parameter statistics
+def print_model_param_stats(model, encoder_attr_name: str = "encoder"):
+    """
+    Print parameter statistics for a model, its encoder (if identifiable), and the head (total - encoder).
+    This function unwraps DDP if needed and mirrors the original print format.
+
+    Args:
+        model: A PyTorch model, possibly wrapped by DistributedDataParallel (DDP).
+        encoder_attr_name: Preferred attribute name to locate the encoder module. Fallback is name prefix "encoder.".
+    Returns:
+        A dict with summarized stats for optional programmatic use.
+    """
+    def dedup_params(params_iter):
+        """Deduplicate parameters by object identity to avoid double counting."""
+        seen = set()
+        unique = []
+        for p in params_iter:
+            pid = id(p)
+            if pid not in seen:
+                seen.add(pid)
+                unique.append(p)
+        return unique
+
+    def param_stats(params_iter):
+        """Return (total_params, trainable_params, approx_memory_MB, params_list)."""
+        params = dedup_params(params_iter)
+        total_params = sum(p.numel() for p in params)
+        trainable_params = sum(p.numel() for p in params if p.requires_grad)
+        mem_bytes = sum(p.numel() * p.element_size() for p in params) if params else 0
+        mem_mb = mem_bytes / (1024 ** 2)
+        return total_params, trainable_params, mem_mb, params
+
+    # Unwrap DDP if necessary
+    model_unwrapped = getattr(model, "module", model)
+
+    # --- Overall model stats ---
+    total_params, trainable_params, total_mem_mb, all_params = param_stats(model_unwrapped.parameters())
+    print(f"Total params: {total_params:,}")
+    print(f"Trainable params: {trainable_params:,}")
+    print(f"Approx param memory: {total_mem_mb:.2f} MB")
+
+    # --- Encoder stats (prefer attribute; fallback to name prefix) ---
+    encoder_params_list = []
+    enc_total = enc_trainable = enc_mem_mb = 0.0
+    encoder_found = False
+
+    encoder = getattr(model_unwrapped, encoder_attr_name, None)
+    if encoder is not None:
+        enc_total, enc_trainable, enc_mem_mb, encoder_params_list = param_stats(encoder.parameters())
+        if enc_total > 0:
+            encoder_found = True
+            print(f"[encoder] Total params: {enc_total:,}")
+            print(f"[encoder] Trainable params: {enc_trainable:,}")
+            print(f"[encoder] Approx param memory: {enc_mem_mb:.2f} MB")
+        else:
+            # encoder exists but has no parameters
+            print("[encoder] Found but has no parameters.")
+    else:
+        # Fallback by name prefix "encoder."
+        named_params = list(model_unwrapped.named_parameters(recurse=True))
+        encoder_params_list = [p for n, p in named_params if n.startswith(f"{encoder_attr_name}.")]
+        if encoder_params_list:
+            enc_total, enc_trainable, enc_mem_mb, encoder_params_list = param_stats(encoder_params_list)
+            encoder_found = True
+            print(f"[encoder] Total params: {enc_total:,}")
+            print(f"[encoder] Trainable params: {enc_trainable:,}")
+            print(f"[encoder] Approx param memory: {enc_mem_mb:.2f} MB")
+        else:
+            print("[encoder] Not found or has no parameters.")
+
+    # --- Head (= total - encoder) stats ---
+    head_total = head_trainable = head_mem_mb = 0.0
+    if encoder_found and encoder_params_list:
+        enc_ids = {id(p) for p in encoder_params_list}
+        head_params = [p for p in all_params if id(p) not in enc_ids]
+        head_total, head_trainable, head_mem_mb, _ = param_stats(head_params)
+        print(f"[head = total - encoder] Total params: {head_total:,}")
+        print(f"[head = total - encoder] Trainable params: {head_trainable:,}")
+        print(f"[head = total - encoder] Approx param memory: {head_mem_mb:.2f} MB")
+    else:
+        print("[head = total - encoder] Cannot compute because encoder parameters were not identified.")
+
+    # Optional structured return for logging or tests
+    return {
+        "total": {
+            "params": int(total_params),
+            "trainable": int(trainable_params),
+            "mem_mb": float(total_mem_mb),
+        },
+        "encoder": {
+            "found": bool(encoder_found),
+            "params": int(enc_total),
+            "trainable": int(enc_trainable),
+            "mem_mb": float(enc_mem_mb),
+        },
+        "head": {
+            "computable": bool(encoder_found and bool(encoder_params_list)),
+            "params": int(head_total),
+            "trainable": int(head_trainable),
+            "mem_mb": float(head_mem_mb),
+        },
+    }
