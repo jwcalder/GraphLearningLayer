@@ -69,7 +69,7 @@ def visualize(model_path, encoder, base=None, TSNE=True, head=False, svm=False, 
         # criterion = criterion.cuda()
         # cudnn.benchmark = True
 
-    stuff = torch.load(model_path)
+    stuff = torch.load(model_path, weights_only=False)
     try:
         model.load_state_dict(stuff["model"])
     except:

@@ -126,15 +126,26 @@ def set_optimizer(opt, model):
 
 
 def save_model(model, optimizer, opt, epoch, save_file):
-    print('==> Saving...')
+    # state = {
+    #     'opt': opt,
+    #     'model': model.state_dict(),
+    #     'optimizer': optimizer.state_dict(),
+    #     'epoch': epoch,
+    # }
+    # torch.save(state, save_file)
+    # print('Checkpoint saved to {}'.format(save_file))
+    # del state
     state = {
-        'opt': opt,
-        'model': model.state_dict(),
-        'optimizer': optimizer.state_dict(),
-        'epoch': epoch,
+        "epoch": epoch,
+        "model": model.module.state_dict() if hasattr(model, "module") else model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "opt": vars(opt) if opt is not None else None,  # keep it serializable
+        "rng_state": torch.get_rng_state(),
+        "cuda_rng_state_all": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        "torch_version": torch.__version__,
     }
     torch.save(state, save_file)
-    del state
+    print(f"Saved checkpoint to {save_file}")
 
 
 def get_base_samples_new(dataset, rate=10, num_class=10, seed=None):

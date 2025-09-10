@@ -210,12 +210,12 @@ def main(opt):
             test_acc_record.append(test_acc)
 
             save_file = os.path.join(
-                opt.save_folder, 'ckpt_epoch_{epoch}.pth'.format(epoch=epoch))
+                opt.save_folder, f'ckpt_epoch_{epoch}.pth')
             save_model(model, optimizer, opt, epoch, save_file)
             path = os.path.join(opt.save_folder, 'ckpt_epoch_{epoch_num}'.format(epoch_num=epoch))
             visualize(save_file, opt.model, base=base_loader_eval, TSNE=opt.TSNE,
-                      head=True, save_dir=path, head_type=opt.head_type)
-            os.remove(save_file)
+                    head=True, save_dir=path, head_type=opt.head_type)
+            # os.remove(save_file)
 
             record_path = os.path.join(opt.save_folder, 'loss_acc_records.npy')
             record_dic = {'epoch': epoch, 'train_loss_record': train_loss_record, 'test_acc_record': test_acc_record}
