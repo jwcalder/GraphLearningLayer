@@ -145,7 +145,7 @@ def main_worker(local_rank, opt):
     _, train_loader = set_loader(
         opt,
         loader_suffix='Encoder Pretrain',
-        augment_type=opt.augment_type_ss,
+        augment_type=opt.augment_type,
         twoviews=True,
         p_label=False,
         train=True,

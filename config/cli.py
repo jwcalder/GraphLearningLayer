@@ -8,6 +8,19 @@ def str_or_float(value):
         return float(value)
     except ValueError:
         return value
+    
+def int_or_none(v):
+    """Parse an argument that can be an int or textual None."""
+    if v is None:
+        # Happens when nargs='?' and the flag is provided without a value
+        return None
+    s = str(v).strip().lower()
+    if s in {"none", "null", "nil", ""}:
+        return None
+    try:
+        return int(s)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError("must be an integer or 'none'") from e
 
 def parse_option():
     parser = argparse.ArgumentParser('argument for training')
@@ -17,7 +30,7 @@ def parse_option():
 
     parser.add_argument('--print_freq_sup', type=int, default=1,
                         help='print frequency')
-    parser.add_argument('--print_freq_ss', type=int, default=25,
+    parser.add_argument('--print_freq_ss', type=int, default=20,
                         help='print frequency')
     parser.add_argument('--save_freq', type=int, default=50,
                         help='save frequency')
@@ -35,9 +48,9 @@ def parse_option():
                         help='number of training epochs')
     parser.add_argument('--cp_load_path', type=str, default='no',
                         help='path to the checkpoint. no means to train from scratch.')
-    parser.add_argument('--train_mode', type=str, default='Sup_and_SS',
-                        choices=['Sup_and_SS', 'Sup_only', 'SS_only'],
-                        help='training mode')
+    # parser.add_argument('--train_mode', type=str, default='Sup_and_SS',
+    #                     choices=['Sup_and_SS', 'Sup_only', 'SS_only'],
+    #                     help='training mode')
     parser.add_argument('--train_prefix', type=str, default='',
                         help='training prefix of the folder')
     parser.add_argument('--no_softmax', action='store_true',
@@ -72,17 +85,14 @@ def parse_option():
     parser.add_argument('--ds_stepsize', type=int, default=1, help='the step size to downsample the dataset')
     parser.add_argument('--data_folder', type=str, default=None, help='path to custom dataset')
     parser.add_argument('--size', type=int, default=32, help='parameter for RandomResizedCrop')
-    parser.add_argument('--augment_type_sup', type=str, default='strong',
-                        choices=['no', 'weak', 'strong'], help='augmentation intensity for supervised part')
-    parser.add_argument('--augment_type_ss', type=str, default='strong',
+    parser.add_argument('--augment_type', type=str, default='strong',
                         choices=['no', 'weak', 'strong'], help='augmentation intensity for semi-supervised part')
-    parser.add_argument('--num_train', type=int, default=250, help='total num of training samples')
+    parser.add_argument('--num_base_data', type=int, default=250, help='total num of base data')
+    parser.add_argument('--num_train', type=int_or_none, default=None, help='total num of training samples, None for all')
 
     # method
-    parser.add_argument('--sup_method', type=str, default='SupCE',
-                        choices=['SupCE', 'SupCon'], help='choose method')
-    parser.add_argument('--pretrain_method', type=str, default='SimCLR',
-                        choices=['SimCLR', 'SupCon'], help='choose method')
+    parser.add_argument('--pretrain_method', type=str, default='',
+                        choices=['', 'SimCLR', 'SupCon'], help='choose method')
     parser.add_argument('--embedding_dim', type=int, default=128,
                         help='dimension of latent features')
     parser.add_argument('--head_type', type=str, default='mlp',
@@ -147,7 +157,6 @@ def parse_option():
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--class_rand_sample', action='store_true',
                         help='sample data randomly among classes for base dataset')
-    parser.add_argument('--sup_train_time', type=int, default=10, help='number of sup steps with each simclr step')
     parser.add_argument('--print_all_parameters', action='store_true', help='print all parameters')
 
     opt = parser.parse_args()
@@ -173,18 +182,22 @@ def parse_option():
 
     if opt.data_folder is None:
         opt.data_folder = './datasets/'
-    opt.model_path = f'./save/{opt.train_prefix}_{opt.train_mode}'
+    sub_folder_name = ''
+    if opt.pretrain_method:
+        sub_folder_name += f'PreTrain_{opt.pretrain_method}'
     if opt.sup_train_type != 'no':
-        opt.model_path = f'{opt.model_path}_{opt.sup_train_type}'
+        sub_folder_name += f'SupTrain_{opt.sup_train_type}'
+    if not sub_folder_name:
+        raise ValueError("No training method specified.")
+    opt.model_path = f'./save/{sub_folder_name}'
 
     iterations = opt.lr_decay_epochs.split(',')
     opt.lr_decay_epochs = list([])
     for it in iterations:
         opt.lr_decay_epochs.append(int(it))
 
-    opt.model_name = '{}_{}_bsz_{}_method_{}_{}_supaug_{}_ssaug_{}'. \
-        format(opt.sup_method, opt.model, opt.batch_size, opt.sup_method,
-               opt.train_mode, opt.augment_type_sup, opt.augment_type_ss)
+    opt.model_name = '{}_bsz_{}_{}_ssaug_{}'. \
+        format(opt.model, opt.batch_size, opt.num_train, opt.augment_type)
 
     if opt.cosine:
         opt.model_name = '{}_cosine'.format(opt.model_name)

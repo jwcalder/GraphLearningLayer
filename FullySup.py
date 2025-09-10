@@ -5,11 +5,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 
+from itertools import cycle, islice
+
 ####
 from utils import adjust_learning_rate, warmup_learning_rate, AverageMeter
 from utils import set_optimizer, save_model
 from utils import FileLogger, test_GL_NP, test_network
-from utils import set_loader, set_model
+from utils import set_loader, set_model, print_loader_info, print_dataset_info
 from losses import *
 
 from GLL import LaplaceLearningSparseHard
@@ -18,101 +20,8 @@ from config.cli import parse_option
 
 
 ## --cp_load_path ./simclr_ckpt_epoch_1000.pth
-
-def pretrain_linear(train_loader, model, optimizer, epoch, opt):
-    """one epoch training"""
-    for param in model.parameters():
-        param.requires_grad = False
-
-    # Unfreeze parameters in self.linear
-    for param in model.linear.parameters():
-        param.requires_grad = True
-
-    model.train()
-
-    for name, module in model.named_modules():
-        if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
-            module.eval()
-
-    batch_time = AverageMeter()
-    data_time = AverageMeter()
-    losses = AverageMeter()
-
-    end = time.time()
-
-    if opt.sup_method == 'SupCE':
-        # criterion = nn.CrossEntropyLoss()
-        criterion = custom_ce_loss
-    elif opt.sup_method == 'SupCon':
-        criterion = SupConLoss(temperature=opt.temp)
-    else:
-        raise ValueError(opt.sup_method)
-
-    # if epoch == 1:
-    #     for name, param in model.named_parameters():
-    #         print(f"Layer: {name} | Frozen: {'NO' if param.requires_grad else 'YES'}")
-
-    for idx, (images, labels) in enumerate(train_loader):
-        data_time.update(time.time() - end)
-
-        if opt.sup_method == 'SupCon':
-            images = torch.cat([images[0], images[1]], dim=0)
-        if torch.cuda.is_available() & (opt.dev != 'cpu'):
-            images = images.cuda(non_blocking=True)
-            labels = labels.cuda(non_blocking=True)
-        bsz = labels.shape[0]
-
-        # warm-up learning rate
-        if opt.warm:
-            warmup_learning_rate(opt, epoch, idx, len(train_loader), optimizer)
-        if opt.adjust_lr:
-            adjust_learning_rate(opt, optimizer, epoch)
-
-        # compute loss
-        # pred, features = model(images)
-        if opt.sup_method == 'SupCon':
-            features = model(images)
-            f1, f2 = torch.split(features, [bsz, bsz], dim=0)
-            _, features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
-            loss = criterion(features, labels)
-        elif opt.sup_method == 'SupCE':
-            pred, _ = model(images)
-            loss = criterion(pred, labels)
-        else:
-            raise ValueError(opt.sup_method)
-
-        # update metric
-        losses.update(loss.item(), bsz)
-
-        # SGD
-        optimizer.zero_grad()
-        loss.backward()
-        # torch.nn.utils.clip_grad_norm_(model.parameters(), opt.temp)
-        optimizer.step()
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
-
-        is_nan = torch.stack([torch.isnan(p).any() for p in model.parameters()]).any()
-        if is_nan:
-            print('nan value')
-
-        # print info
-        if (idx + 1) % opt.print_freq_sup == 0:
-            print('Pretrain Supervised {0}: [{1}][{2}/{3}]\t'
-                  'BT {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'DT {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                  'loss {loss.val:.3f} ({loss.avg:.3f})'.format(
-                opt.sup_method, epoch, idx + 1, len(train_loader),
-                batch_time=batch_time,
-                data_time=data_time,
-                loss=losses))
-            sys.stdout.flush()
-
-    return losses.avg
-
-
-def train(train_loader, base_loader, train_dataset, model, optimizer, epoch, opt):
+def train(train_loader, base_loader, unlabel_train_loader,
+          train_dataset, model, optimizer, epoch, opt):
     """one epoch training"""
     for param in model.parameters():
         param.requires_grad = True
@@ -131,9 +40,22 @@ def train(train_loader, base_loader, train_dataset, model, optimizer, epoch, opt
     correct_num = 0
     data_count = 0
 
-    for idx, (indices, images, labels) in enumerate(train_loader):
+    if unlabel_train_loader is None:
+        data_iter = train_loader
+    else:
+        target_steps = max(len(train_loader), len(unlabel_train_loader))
+        data_iter = islice(zip(cycle(train_loader), cycle(unlabel_train_loader)), target_steps)
+        
+    for idx, data in enumerate(data_iter):
         base_images, base_labels = next(iter(base_loader))
         data_time.update(time.time() - end)
+        
+        if unlabel_train_loader is None:
+            indices, images, labels = data
+        else:
+            (indices, images_l, labels), (images_u, _) = data
+            images = torch.cat([images_l, images_u], dim=0)
+            labels = labels
 
         if torch.cuda.is_available() & (opt.dev != 'cpu'):
             images = images.cuda(non_blocking=True)
@@ -154,9 +76,11 @@ def train(train_loader, base_loader, train_dataset, model, optimizer, epoch, opt
             images = torch.cat((base_images, images), dim=0)  # Put the base images on top of unlabel images
             _, features = model(images)
             pred = lap(features, label_matrix, opt.temp, opt.epsilon)
+            pred = pred[:len(labels)]
             loss = criterion(pred, labels)
         else:
             pred, _ = model(images)
+            pred = pred[:len(labels)]
             loss = criterion(pred, labels)
         pred_labels = torch.argmax(pred, dim=1)
         correct_num += torch.sum(torch.eq(pred_labels, labels)).item()
@@ -192,9 +116,9 @@ def train(train_loader, base_loader, train_dataset, model, optimizer, epoch, opt
         # print info
         if (idx + 1) % opt.print_freq_ss == 0:
             print('Train: [{0}][{1}/{2}]\t'
-                  'BT {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'DT {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                  'loss {loss.val:.3f} ({loss.avg:.3f})'.format(
+                'BT {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                'DT {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                'loss {loss.val:.3f} ({loss.avg:.3f})'.format(
                 epoch, idx + 1, len(train_loader), batch_time=batch_time,
                 data_time=data_time, loss=losses))
             sys.stdout.flush()
@@ -204,19 +128,32 @@ def train(train_loader, base_loader, train_dataset, model, optimizer, epoch, opt
 
 def main(opt):
     # build data loader
-    if opt.sup_epochs > 0:
-        train_loader_sup, _ = set_loader(opt, loader_suffix='MLP Classifier Pretrain',
-                                         augment_type=opt.augment_type_sup,
-                                         twoviews=False, p_label=False, train=True, score_dataset=False)
-    _, train_loader_ss, train_dataset_ss = set_loader(opt, loader_suffix='Fully Supervised Training',
-                                                      augment_type=opt.augment_type_ss,
-                                                      twoviews=False, p_label=False, train=True,
-                                                      score_dataset=True)
-    base_loader_eval, test_loader_eval = set_loader(opt, loader_suffix='Test', augment_type='no',
-                                                    twoviews=False, p_label=False, train=False)
-    _, train_loader_eval = set_loader(opt, loader_suffix='Test', augment_type='no',
-                                      twoviews=False, p_label=False, train=True)
+    # _, train_loader_ss, train_dataset_ss = set_loader(opt, loader_suffix='Supervised Training',
+    #                                                 augment_type=opt.augment_type,
+    #                                                 twoviews=False, p_label=False, train=True,
+    #                                                 score_dataset=True)
+    # base_loader_eval, test_loader_eval = set_loader(opt, loader_suffix='Test', augment_type='no',
+    #                                                 twoviews=False, p_label=False, train=False)
+    # _, train_loader_eval = set_loader(opt, loader_suffix='Test', augment_type='no',
+    #                                 twoviews=False, p_label=False, train=True)
+    train_loaders, eval_loaders = set_loader(opt, augment_type=opt.augment_type)
+    train_dataset_ss, train_loader_ss, unlabel_train_loader = train_loaders
+    base_loader_eval, train_loader_eval, test_loader_eval = eval_loaders
 
+    print("✓ Data loaders generated successfully.")
+
+    # Dataset info
+    print_dataset_info("train_dataset_ss", train_dataset_ss)
+
+    # Train loaders
+    print_loader_info("train_loader_ss", train_loader_ss)
+    print_loader_info("unlabel_train_loader", unlabel_train_loader)
+
+    # Eval loaders
+    print_loader_info("base_loader_eval", base_loader_eval)
+    print_loader_info("train_loader_eval", train_loader_eval)
+    print_loader_info("test_loader_eval", test_loader_eval)
+    
     # build model and criterion
     model = set_model(opt)
     optimizer = set_optimizer(opt, model)
@@ -225,29 +162,6 @@ def main(opt):
     train_loss_record = []
     test_acc_record = []
     plot_epochs = []
-
-    if opt.sup_epochs > 0:
-        epoch = -1
-        plot_epochs.append(epoch)
-        if opt.sup_train_type == 'gl':
-            test_acc = test_GL_NP(model, base_loader_eval, test_loader_eval, opt, train_loader=train_loader_eval)
-        elif opt.sup_train_type == 'mlp':
-            _ = test_GL_NP(model, base_loader_eval, test_loader_eval, opt, train_loader=train_loader_eval)
-            test_acc = test_network(model, base_loader_eval, test_loader_eval, opt, predictor='MLP')
-        else:
-            raise ValueError(opt.sup_train_type)
-        test_acc_record.append(test_acc)
-
-        for pretrain_epoch in range(1, opt.sup_epochs + 1):
-
-            time1 = time.time()
-            pretrain_loss = pretrain_linear(train_loader_sup, model, optimizer, pretrain_epoch, opt)
-            time2 = time.time()
-
-            if pretrain_epoch % opt.plot_freq_sup == 0:
-                print(
-                    'Sup pretrain epoch {}, single epoch time {:.2f}, loss {:.2f}'.format(pretrain_epoch, time2 - time1,
-                                                                                          pretrain_loss))
 
     epoch = 0
     plot_epochs.append(epoch)
@@ -259,23 +173,23 @@ def main(opt):
     else:
         raise ValueError(opt.sup_train_type)
     test_acc_record.append(test_acc)
-    base_dataset_ss = train_dataset_ss.select_base_data(opt.num_train, class_uniform_sample=opt.class_uni_sample,
-                                                       seed=opt.seed, mode='random')
+    base_dataset_ss = train_dataset_ss.select_base_data(opt.num_base_data, class_uniform_sample=opt.class_uni_sample,
+                                                    seed=opt.seed, mode='random')
     base_loader_ss = torch.utils.data.DataLoader(
         base_dataset_ss, batch_size=len(base_dataset_ss), shuffle=True,
         num_workers=opt.num_workers, pin_memory=True, sampler=None)
 
     for epoch in range(1 + opt.start_epochs, opt.epochs + 1):
-
         # train for one epoch
         time1 = time.time()
-        loss, train_acc = train(train_loader_ss, base_loader_ss, train_dataset_ss, model, optimizer, epoch, opt)
+        loss, train_acc = train(train_loader_ss, base_loader_ss, unlabel_train_loader, 
+                                train_dataset_ss, model, optimizer, epoch, opt)
         time2 = time.time()
         print('epoch {}, total time {:.2f}, loss {:.2f}, train acc {:.2f}'.format(epoch, time2 - time1,
                                                                                   loss, train_acc * 100))
 
         if opt.sup_train_type == 'gl' and epoch % opt.gl_update_base_epochs == 0:
-            base_dataset_ss = train_dataset_ss.select_base_data(opt.num_train, class_uniform_sample=opt.class_uni_sample,
+            base_dataset_ss = train_dataset_ss.select_base_data(opt.num_base_data, class_uniform_sample=opt.class_uni_sample,
                                                                seed=None, mode=opt.gl_update_base_mode)
             base_loader_ss = torch.utils.data.DataLoader(
                 base_dataset_ss, batch_size=len(base_dataset_ss), shuffle=True,
@@ -335,7 +249,7 @@ def main(opt):
     path = os.path.join(opt.save_folder, 'ckpt_epoch_{epoch}'.format(epoch=opt.epochs))
     # visualize(save_file,opt.model,TSNE=opt.TSNE,head=False,save_dir=path)
     visualize(save_file, opt.model, base=base_loader_eval, TSNE=opt.TSNE,
-              head=True, save_dir=path, head_type=opt.head_type)
+            head=True, save_dir=path, head_type=opt.head_type)
 
     record_path = os.path.join(opt.save_folder, 'loss_acc_records.npy')
     record_dic = {'epoch': epoch, 'train_loss_record': train_loss_record, 'test_acc_record': test_acc_record}
