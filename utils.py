@@ -584,8 +584,12 @@ def set_loader(opt, augment_type='weak', twoviews=False):
     if opt.num_base_data >= num_train:
         raise ValueError("num_base_data must be smaller than num_train")
     
+    label_train_dataset_notransform = CustomDataset(labeled_train_data, 
+                                        labeled_train_labels, 
+                                        transform=eval_transformation)
+    
     base_data, base_labels = sample_dataset(
-        label_train_dataset, opt.num_base_data,
+        label_train_dataset_notransform, opt.num_base_data,
         class_uniform_sample=opt.class_uni_sample,
         num_classes=num_classes,
         seed=opt.seed

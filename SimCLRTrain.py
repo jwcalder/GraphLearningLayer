@@ -37,7 +37,7 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
     master = is_master_process()
 
     end = time.time()
-    for idx, (images, labels) in enumerate(train_loader):
+    for idx, (indices, images, labels) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
 
@@ -142,15 +142,12 @@ def main_worker(local_rank, opt):
         torch.cuda.set_device(local_rank)
 
     # build data loader (per-rank sampler should be set inside set_loader)
-    _, train_loader = set_loader(
+    train_loaders, _ = set_loader(
         opt,
-        loader_suffix='Encoder Pretrain',
         augment_type=opt.augment_type,
-        twoviews=True,
-        p_label=False,
-        train=True,
-        score_dataset=False
+        twoviews=True
     )
+    _, train_loader, _ = train_loaders
 
     # build model / criterion / optimizer
     model = set_model(opt)
