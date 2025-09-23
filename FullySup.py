@@ -238,13 +238,12 @@ def main(opt):
         mode='random'
     )
 
-    # IMPORTANT: base_loader has a single big batch, so keep it single-process and unpinned
     base_loader_ss = torch.utils.data.DataLoader(
         base_dataset_ss,
         batch_size=len(base_dataset_ss),
         shuffle=True,
-        num_workers=0,          # single process to avoid worker ballooning
-        pin_memory=False,       # no need to pin a giant batch
+        num_workers=0,          
+        pin_memory=False,       
         sampler=None
     )
 

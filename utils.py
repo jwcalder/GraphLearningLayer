@@ -198,6 +198,34 @@ class CustomDataset(Dataset):
             x = self.transform(x)
 
         return x, y
+    
+class SubsetWithTransform(Dataset):
+    """Wrap an existing dataset with a fixed index list and an optional override transform.
+    It defers image loading/transform until __getitem__, avoiding upfront materialization."""
+    def __init__(self, dataset, indices, transform=None):
+        self.dataset = dataset
+        self.indices = np.asarray(indices, dtype=np.int64)
+        self.transform = transform
+
+        # Expose targets for fast class index building if available
+        base_targets = getattr(dataset, "targets", None)
+        if base_targets is not None:
+            if isinstance(base_targets, torch.Tensor):
+                base_targets = base_targets.tolist()
+            self.targets = [int(base_targets[i]) for i in self.indices]  # list[int]
+        else:
+            self.targets = None  # falls back to generic path in prepare_class_indices
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, i):
+        x, y = self.dataset[int(self.indices[i])]
+        if self.transform is not None:
+            # Ensure PIL input for torchvision transforms
+            x = Image.fromarray(x) if isinstance(x, np.ndarray) else (x if isinstance(x, Image.Image) else transforms.ToPILImage()(x))
+            x = self.transform(x)
+        return x, y
 
 class DSCustomDataset(Dataset):
     def __init__(self, dataset, stepsize=1):
@@ -268,150 +296,185 @@ def prepare_class_indices(dataset):
     return class_indices
 
 
-def sample_dataset(dataset, num_samples, class_uniform_sample=False, num_classes=None, seed=None):
+# def sample_dataset(dataset, num_samples, class_uniform_sample=False, num_classes=None, seed=None):
+#     if seed is not None:
+#         np.random.seed(seed)
+
+#     if class_uniform_sample:
+#         if num_classes is None:
+#             raise ValueError("num_classes must be provided when class_uniform_sample is True")
+
+#         if not hasattr(dataset, 'class_indices'):
+#             dataset.class_indices = prepare_class_indices(dataset)
+
+#         samples_per_class = num_samples // num_classes
+#         selected_indices = [np.random.choice(indices, samples_per_class, replace=False)
+#                             for indices in dataset.class_indices.values()]
+#         selected_indices = np.concatenate(selected_indices)
+#     else:
+#         selected_indices = np.random.choice(len(dataset), num_samples, replace=False)
+
+#     to_tensor_transform = transforms.ToTensor()  
+#     tensors, labels = [], []
+
+#     for idx in selected_indices:
+#         image, label = dataset[idx]
+#         if not torch.is_tensor(image):
+#             image = to_tensor_transform(image)
+#         tensors.append(image)
+#         labels.append(label)
+
+#     return torch.stack(tensors), torch.tensor(labels)
+
+# def sample_and_split_dataset(dataset, num_samples, class_uniform_sample=False, num_classes=None, seed=None):
+#     """
+#     Split a dataset into two parts:
+#       1) a sampled subset (using the same sampling logic as `sample_dataset`)
+#       2) the remaining subset (all items not selected in the sample)
+
+#     Args:
+#         dataset: A dataset implementing __len__ and __getitem__ -> (image, label).
+#         num_samples (int): Number of samples to draw (without replacement).
+#         class_uniform_sample (bool): If True, sample uniformly across classes.
+#         num_classes (int or None): Total number of classes; required if class_uniform_sample is True.
+#         seed (int or None): Random seed for reproducibility.
+
+#     Returns:
+#         ((sample_tensors, sample_labels), (rest_tensors, rest_labels)):
+#             - sample_tensors: torch.Tensor of shape [N, C, H, W]
+#             - sample_labels: torch.LongTensor of shape [N]
+#             - rest_tensors: torch.Tensor of shape [M, C, H, W]
+#             - rest_labels: torch.LongTensor of shape [M]
+#           where N = number of sampled items, M = len(dataset) - N.
+
+#     Notes:
+#         - Sampling is performed without replacement.
+#         - In class-uniform mode, this function uses `num_samples // num_classes` per class
+#           (same behavior as the reference function). If `num_samples` is not divisible by
+#           `num_classes`, the remainder is ignored.
+#         - All images are converted to tensors using `transforms.ToTensor()` if they aren't already
+#           torch tensors. Ensure all images have the same spatial size and channels so that
+#           `torch.stack` succeeds.
+#     """
+#     if seed is not None:
+#         np.random.seed(seed)
+
+#     dataset_len = len(dataset)
+#     if num_samples > dataset_len:
+#         raise ValueError("num_samples cannot exceed dataset length when sampling without replacement")
+
+#     # --- Determine sampled indices with/without class-uniform sampling ---
+#     if class_uniform_sample:
+#         if num_classes is None:
+#             raise ValueError("num_classes must be provided when class_uniform_sample is True")
+
+#         # Try to use a cached or helper-prepared index map; otherwise build it here.
+#         if not hasattr(dataset, 'class_indices'):
+#             # If a helper exists in the global scope, use it for parity with the reference function.
+#             if 'prepare_class_indices' in globals() and callable(globals()['prepare_class_indices']):
+#                 dataset.class_indices = prepare_class_indices(dataset)
+#             else:
+#                 # Build {label: np.ndarray of indices} by scanning the dataset once.
+#                 tmp = {}
+#                 for i in range(dataset_len):
+#                     _, lbl = dataset[i]
+#                     tmp.setdefault(lbl, []).append(i)
+#                 dataset.class_indices = {k: np.asarray(v, dtype=np.int64) for k, v in tmp.items()}
+
+#         # Basic sanity checks
+#         if len(dataset.class_indices) < num_classes:
+#             raise ValueError(
+#                 f"Found {len(dataset.class_indices)} classes, but num_classes={num_classes} was provided."
+#             )
+
+#         samples_per_class = num_samples // num_classes
+#         if samples_per_class == 0:
+#             raise ValueError(
+#                 "num_samples is smaller than num_classes; cannot draw at least one per class with uniform sampling."
+#             )
+
+#         selected_chunks = []
+#         for lbl, indices in dataset.class_indices.items():
+#             if len(indices) < samples_per_class:
+#                 raise ValueError(
+#                     f"Not enough items in class {lbl} to draw {samples_per_class} without replacement."
+#                 )
+#             chosen = np.random.choice(indices, samples_per_class, replace=False)
+#             selected_chunks.append(chosen)
+
+#         selected_indices = np.concatenate(selected_chunks)
+#     else:
+#         selected_indices = np.random.choice(dataset_len, num_samples, replace=False)
+
+#     # --- Compute remainder indices ---
+#     selected_indices = np.asarray(selected_indices, dtype=np.int64)
+#     # Keep remainder in ascending order to preserve dataset order
+#     rest_indices = np.setdiff1d(np.arange(dataset_len, dtype=np.int64), selected_indices, assume_unique=False)
+
+#     # --- Materialize tensors and labels for both splits ---
+#     to_tensor_transform = transforms.ToTensor()
+#     sample_imgs, sample_lbls = [], []
+#     rest_imgs, rest_lbls = [], []
+
+#     # Gather sampled subset
+#     for idx in selected_indices:
+#         img, lbl = dataset[int(idx)]
+#         if not torch.is_tensor(img):
+#             img = to_tensor_transform(img)
+#         sample_imgs.append(img)
+#         sample_lbls.append(lbl)
+
+#     # Gather remaining subset
+#     for idx in rest_indices:
+#         img, lbl = dataset[int(idx)]
+#         if not torch.is_tensor(img):
+#             img = to_tensor_transform(img)
+#         rest_imgs.append(img)
+#         rest_lbls.append(lbl)
+
+#     # Stack into tensors (will fail if shapes are inconsistent across items)
+#     sample_tensors = torch.stack(sample_imgs) if sample_imgs else torch.empty(0)
+#     sample_labels = torch.tensor(sample_lbls, dtype=torch.long) if sample_lbls else torch.empty(0, dtype=torch.long)
+
+#     rest_tensors = torch.stack(rest_imgs) if rest_imgs else torch.empty(0)
+#     rest_labels = torch.tensor(rest_lbls, dtype=torch.long) if rest_lbls else torch.empty(0, dtype=torch.long)
+
+#     return (sample_tensors, sample_labels), (rest_tensors, rest_labels)
+
+def sample_indices(dataset, num_samples, class_uniform_sample=False, num_classes=None, seed=None):
+    """Return only the selected indices; do not materialize images."""
     if seed is not None:
         np.random.seed(seed)
 
     if class_uniform_sample:
         if num_classes is None:
             raise ValueError("num_classes must be provided when class_uniform_sample is True")
-
-        if not hasattr(dataset, 'class_indices'):
-            dataset.class_indices = prepare_class_indices(dataset)
-
+        class_map = getattr(dataset, 'class_indices', None)
+        if class_map is None:
+            class_map = prepare_class_indices(dataset)  # fast-path uses .targets when available
+            dataset.class_indices = class_map
         samples_per_class = num_samples // num_classes
-        selected_indices = [np.random.choice(indices, samples_per_class, replace=False)
-                            for indices in dataset.class_indices.values()]
-        selected_indices = np.concatenate(selected_indices)
+        selected = []
+        for indices in class_map.values():
+            indices = np.asarray(indices, dtype=np.int64)
+            if len(indices) < samples_per_class:
+                raise ValueError("Not enough items for uniform sampling in one class")
+            selected.append(np.random.choice(indices, samples_per_class, replace=False))
+        selected_indices = np.concatenate(selected)
     else:
         selected_indices = np.random.choice(len(dataset), num_samples, replace=False)
+    return selected_indices.astype(np.int64)
 
-    to_tensor_transform = transforms.ToTensor()  
-    tensors, labels = [], []
-
-    for idx in selected_indices:
-        image, label = dataset[idx]
-        if not torch.is_tensor(image):
-            image = to_tensor_transform(image)
-        tensors.append(image)
-        labels.append(label)
-
-    return torch.stack(tensors), torch.tensor(labels)
-
-def sample_and_split_dataset(dataset, num_samples, class_uniform_sample=False, num_classes=None, seed=None):
-    """
-    Split a dataset into two parts:
-      1) a sampled subset (using the same sampling logic as `sample_dataset`)
-      2) the remaining subset (all items not selected in the sample)
-
-    Args:
-        dataset: A dataset implementing __len__ and __getitem__ -> (image, label).
-        num_samples (int): Number of samples to draw (without replacement).
-        class_uniform_sample (bool): If True, sample uniformly across classes.
-        num_classes (int or None): Total number of classes; required if class_uniform_sample is True.
-        seed (int or None): Random seed for reproducibility.
-
-    Returns:
-        ((sample_tensors, sample_labels), (rest_tensors, rest_labels)):
-            - sample_tensors: torch.Tensor of shape [N, C, H, W]
-            - sample_labels: torch.LongTensor of shape [N]
-            - rest_tensors: torch.Tensor of shape [M, C, H, W]
-            - rest_labels: torch.LongTensor of shape [M]
-          where N = number of sampled items, M = len(dataset) - N.
-
-    Notes:
-        - Sampling is performed without replacement.
-        - In class-uniform mode, this function uses `num_samples // num_classes` per class
-          (same behavior as the reference function). If `num_samples` is not divisible by
-          `num_classes`, the remainder is ignored.
-        - All images are converted to tensors using `transforms.ToTensor()` if they aren't already
-          torch tensors. Ensure all images have the same spatial size and channels so that
-          `torch.stack` succeeds.
-    """
+def sample_and_split_indices(dataset, num_samples, class_uniform_sample=False, num_classes=None, seed=None):
+    """Return (selected_indices, rest_indices) without materializing pixel tensors."""
     if seed is not None:
         np.random.seed(seed)
-
-    dataset_len = len(dataset)
-    if num_samples > dataset_len:
+    if num_samples > len(dataset):
         raise ValueError("num_samples cannot exceed dataset length when sampling without replacement")
-
-    # --- Determine sampled indices with/without class-uniform sampling ---
-    if class_uniform_sample:
-        if num_classes is None:
-            raise ValueError("num_classes must be provided when class_uniform_sample is True")
-
-        # Try to use a cached or helper-prepared index map; otherwise build it here.
-        if not hasattr(dataset, 'class_indices'):
-            # If a helper exists in the global scope, use it for parity with the reference function.
-            if 'prepare_class_indices' in globals() and callable(globals()['prepare_class_indices']):
-                dataset.class_indices = prepare_class_indices(dataset)
-            else:
-                # Build {label: np.ndarray of indices} by scanning the dataset once.
-                tmp = {}
-                for i in range(dataset_len):
-                    _, lbl = dataset[i]
-                    tmp.setdefault(lbl, []).append(i)
-                dataset.class_indices = {k: np.asarray(v, dtype=np.int64) for k, v in tmp.items()}
-
-        # Basic sanity checks
-        if len(dataset.class_indices) < num_classes:
-            raise ValueError(
-                f"Found {len(dataset.class_indices)} classes, but num_classes={num_classes} was provided."
-            )
-
-        samples_per_class = num_samples // num_classes
-        if samples_per_class == 0:
-            raise ValueError(
-                "num_samples is smaller than num_classes; cannot draw at least one per class with uniform sampling."
-            )
-
-        selected_chunks = []
-        for lbl, indices in dataset.class_indices.items():
-            if len(indices) < samples_per_class:
-                raise ValueError(
-                    f"Not enough items in class {lbl} to draw {samples_per_class} without replacement."
-                )
-            chosen = np.random.choice(indices, samples_per_class, replace=False)
-            selected_chunks.append(chosen)
-
-        selected_indices = np.concatenate(selected_chunks)
-    else:
-        selected_indices = np.random.choice(dataset_len, num_samples, replace=False)
-
-    # --- Compute remainder indices ---
-    selected_indices = np.asarray(selected_indices, dtype=np.int64)
-    # Keep remainder in ascending order to preserve dataset order
-    rest_indices = np.setdiff1d(np.arange(dataset_len, dtype=np.int64), selected_indices, assume_unique=False)
-
-    # --- Materialize tensors and labels for both splits ---
-    to_tensor_transform = transforms.ToTensor()
-    sample_imgs, sample_lbls = [], []
-    rest_imgs, rest_lbls = [], []
-
-    # Gather sampled subset
-    for idx in selected_indices:
-        img, lbl = dataset[int(idx)]
-        if not torch.is_tensor(img):
-            img = to_tensor_transform(img)
-        sample_imgs.append(img)
-        sample_lbls.append(lbl)
-
-    # Gather remaining subset
-    for idx in rest_indices:
-        img, lbl = dataset[int(idx)]
-        if not torch.is_tensor(img):
-            img = to_tensor_transform(img)
-        rest_imgs.append(img)
-        rest_lbls.append(lbl)
-
-    # Stack into tensors (will fail if shapes are inconsistent across items)
-    sample_tensors = torch.stack(sample_imgs) if sample_imgs else torch.empty(0)
-    sample_labels = torch.tensor(sample_lbls, dtype=torch.long) if sample_lbls else torch.empty(0, dtype=torch.long)
-
-    rest_tensors = torch.stack(rest_imgs) if rest_imgs else torch.empty(0)
-    rest_labels = torch.tensor(rest_lbls, dtype=torch.long) if rest_lbls else torch.empty(0, dtype=torch.long)
-
-    return (sample_tensors, sample_labels), (rest_tensors, rest_labels)
+    selected = sample_indices(dataset, num_samples, class_uniform_sample, num_classes, seed)
+    selected = np.asarray(selected, dtype=np.int64)
+    rest = np.setdiff1d(np.arange(len(dataset), dtype=np.int64), selected, assume_unique=False)
+    return selected, rest
 
 def loader_to_numpy(loader, opt, model=None):
     data_list = []
@@ -453,26 +516,27 @@ class FileLogger(object):
 
 def set_loader(opt, augment_type='weak', twoviews=False):
     """
-    Build dataloaders for (base, train) with optional distributed support.
+    Build dataloaders for (base, train) with memory-safe index-based sampling.
 
     Key points:
-        - Keep default collate_fn so that when `twoviews=True`, each batch yields:
-            images: [ tensor(B, C, H, W), tensor(B, C, H, W) ]
-            labels: tensor(B)
-            This matches `images = torch.cat([images[0], images[1]], dim=0)` in your train() loop.
-        - Use DistributedSampler when `opt.distributed` is True.
-        - Use per-GPU batch sizes: `opt.batch_size_per_gpu` / `opt.test_batch_size_per_gpu`
-            (fallback to `opt.batch_size` / `opt.test_batch_size` if fields are not set).
-        - Return signatures are unchanged.
+      - Avoids materializing large tensors during sampling (no torch.stack of whole subsets).
+      - Uses index-only samplers: `sample_and_split_indices` / `sample_indices`.
+      - Wraps subsets with `SubsetWithTransform` so images are loaded/transformed lazily in __getitem__.
+      - Keeps default collate_fn so when `twoviews=True`, each batch yields:
+          images: [ tensor(B, C, H, W), tensor(B, C, H, W) ]
+          labels: tensor(B)
+        which matches `images = torch.cat([images[0], images[1]], dim=0)` in train loops.
+      - Supports (optional) DistributedSampler when `opt.distributed` is True.
+      - Return signatures are unchanged.
     """
+    import numpy as np
     import torch
     from torch.utils.data.distributed import DistributedSampler
     from torchvision import datasets
 
-    # ----- Dataset config (unchanged) -----
-    if opt.dataset == 'cifar10' or opt.dataset == 'cifar100':
-        dataset_config = datasets_setting.__dict__[opt.dataset]()
-    elif opt.dataset == 'mnist' or opt.dataset == 'fashion_mnist':
+    # ----- Dataset config -----
+    # Expect `datasets_setting` dict and its factory functions in the current module.
+    if opt.dataset in ('cifar10', 'cifar100', 'mnist', 'fashion_mnist'):
         dataset_config = datasets_setting.__dict__[opt.dataset]()
     else:
         raise ValueError('dataset not supported: {}'.format(opt.dataset))
@@ -491,67 +555,75 @@ def set_loader(opt, augment_type='weak', twoviews=False):
         base_transform = strong_transformation
 
     # For SimCLR: wrap transform to produce two views if requested
-    # TwoCropTransform is already defined in utils.py and returns [view1, view2]
+    # TwoCropTransform is expected to be defined in utils.py and returns [view1, view2]
     transform_for_train = TwoCropTransform(base_transform) if twoviews else base_transform
 
-    # ----- Build torchvision datasets -----
+    # ----- Build torchvision datasets (transform=None; we will apply transforms lazily) -----
     if opt.dataset == 'cifar10':
-        train_dataset   = datasets.CIFAR10(root=opt.data_folder, transform=None, train=True, download=True)
-        test_dataset   = datasets.CIFAR10(root=opt.data_folder, transform=None, train=False, download=True)
+        train_dataset = datasets.CIFAR10(root=opt.data_folder, transform=None, train=True,  download=True)
+        test_dataset  = datasets.CIFAR10(root=opt.data_folder, transform=None, train=False, download=True)
     elif opt.dataset == 'cifar100':
-        train_dataset = datasets.CIFAR100(root=opt.data_folder, transform=None, train=True, download=True)
-        test_dataset   = datasets.CIFAR100(root=opt.data_folder, transform=None, train=False, download=True)
+        train_dataset = datasets.CIFAR100(root=opt.data_folder, transform=None, train=True,  download=True)
+        test_dataset  = datasets.CIFAR100(root=opt.data_folder, transform=None, train=False, download=True)
     elif opt.dataset == 'mnist':
-        train_dataset = datasets.MNIST(root=opt.data_folder, transform=None, train=True, download=True)
-        test_dataset   = datasets.MNIST(root=opt.data_folder, transform=None, train=False, download=True)
+        train_dataset = datasets.MNIST(root=opt.data_folder, transform=None, train=True,  download=True)
+        test_dataset  = datasets.MNIST(root=opt.data_folder, transform=None, train=False, download=True)
     elif opt.dataset == 'fashion_mnist':
-        train_dataset = datasets.FashionMNIST(root=opt.data_folder, transform=None, train=True, download=True)
-        test_dataset   = datasets.FashionMNIST(root=opt.data_folder, transform=None, train=False, download=True)
+        train_dataset = datasets.FashionMNIST(root=opt.data_folder, transform=None, train=True,  download=True)
+        test_dataset  = datasets.FashionMNIST(root=opt.data_folder, transform=None, train=False, download=True)
     else:
         raise ValueError(opt.dataset)
 
-    # ----- Optional downsample for the base dataset (unchanged) -----
+    # ----- Optional downsample wrapper for the base dataset (unchanged behavior) -----
     if int(opt.ds_stepsize) > 1:
+        # DSCustomDataset should act like a Dataset; SubsetWithTransform will wrap it later.
         train_dataset = DSCustomDataset(train_dataset, int(opt.ds_stepsize))
 
+    # Determine number of labeled training samples
     if opt.num_train is None or opt.num_train > len(train_dataset):
-        num_train = len(train_dataset) 
+        num_train = len(train_dataset)
     else:
-        num_train = opt.num_train
-        
+        num_train = int(opt.num_train)
+
     # ----- Per-GPU batch size -----
-    train_batch_size = opt.batch_size
-    test_batch_size = opt.test_batch_size
-    label_train_batch_size = int(num_train / len(train_dataset) * train_batch_size)
-    unlabel_train_batch_size = train_batch_size - label_train_batch_size
-    
-    # ----- Distributed sampler for training dataset -----
+    # Keep original behavior but ensure valid positive integers.
+    train_batch_size = int(opt.batch_size)
+    test_batch_size  = int(opt.test_batch_size)
+    # Proportional labeled batch size; clamp to [1, train_batch_size]
+    label_train_batch_size = max(1, min(train_batch_size, int(num_train / len(train_dataset) * train_batch_size)))
+    unlabel_train_batch_size = max(0, train_batch_size - label_train_batch_size)
+
+    # ----- Distributed knobs -----
     use_dist   = bool(getattr(opt, 'distributed', False))
     world_size = int(getattr(opt, 'world_size', 1))
     rank       = int(getattr(opt, 'rank', 0))
-    
-    # loader for training (need to split labeled train / unlabeled train)
-    (labeled_train_data, labeled_train_labels), (unlabeled_train_data, unlabeled_train_labels) = \
-        sample_and_split_dataset(train_dataset, num_train,
+
+    # =========================
+    # Train split (labeled / unlabeled) — index-based sampling
+    # =========================
+    sel_idx, rest_idx = sample_and_split_indices(
+        train_dataset, num_train,
         class_uniform_sample=opt.class_uni_sample,
         num_classes=num_classes,
         seed=opt.seed
     )
-    # label
-    label_train_dataset = CustomDataset(labeled_train_data, 
-                                        labeled_train_labels, 
-                                        transform=transform_for_train)
-    
-    if opt.num_train is None:
-        unlabel_train_loader = None
-    else:
-        unlabel_train_dataset = CustomDataset(unlabeled_train_data, 
-                                            unlabeled_train_labels, 
-                                            transform=transform_for_train)
+    sel_idx  = np.asarray(sel_idx,  dtype=np.int64)
+    rest_idx = np.asarray(rest_idx, dtype=np.int64)
+
+    # Labeled train dataset (lazy transforms; two views if requested)
+    label_train_dataset = SubsetWithTransform(
+        train_dataset, sel_idx, transform=transform_for_train
+    )
+
+    # Unlabeled train loader (if there are remaining indices and a positive batch size)
+    if len(rest_idx) > 0 and unlabel_train_batch_size > 0:
+        unlabel_train_dataset = SubsetWithTransform(
+            train_dataset, rest_idx, transform=transform_for_train
+        )
         unlabel_train_sampler = DistributedSampler(unlabel_train_dataset,
-                                        num_replicas=world_size,
-                                        rank=rank,
-                                        shuffle=True) if use_dist else None
+                                                num_replicas=world_size,
+                                                rank=rank,
+                                                shuffle=True) if use_dist else None
         unlabel_train_loader = torch.utils.data.DataLoader(
             unlabel_train_dataset,
             batch_size=unlabel_train_batch_size,
@@ -562,13 +634,15 @@ def set_loader(opt, augment_type='weak', twoviews=False):
             drop_last=True,
             collate_fn=None
         )
-    
-    # ----- score training dataset loader -----
+    else:
+        unlabel_train_loader = None
+
+    # ----- score training dataset loader (same labeled subset, but wrapped with DatasetWithScore) -----
     label_train_dataset_score = DatasetWithScore(label_train_dataset, scores=None)
     train_sampler_score = DistributedSampler(label_train_dataset_score,
-                                    num_replicas=world_size,
-                                    rank=rank,
-                                    shuffle=True) if use_dist else None
+                                            num_replicas=world_size,
+                                            rank=rank,
+                                            shuffle=True) if use_dist else None
     label_train_loader_score = torch.utils.data.DataLoader(
         label_train_dataset_score,
         batch_size=label_train_batch_size,
@@ -580,21 +654,30 @@ def set_loader(opt, augment_type='weak', twoviews=False):
         collate_fn=None
     )
 
-    # ----- dataloader for evaluation -----
+    # =========================
+    # Evaluation loaders
+    # =========================
     if opt.num_base_data >= num_train:
         raise ValueError("num_base_data must be smaller than num_train")
-    
-    label_train_dataset_notransform = CustomDataset(labeled_train_data, 
-                                        labeled_train_labels, 
-                                        transform=eval_transformation)
-    
-    base_data, base_labels = sample_dataset(
-        label_train_dataset_notransform, opt.num_base_data,
+
+    # Base (prototype) set is sampled from the labeled pool, with eval transforms
+    labeled_pool_for_eval = SubsetWithTransform(
+        train_dataset, sel_idx, transform=eval_transformation
+    )
+    base_rel_idx = sample_indices(
+        labeled_pool_for_eval, opt.num_base_data,
         class_uniform_sample=opt.class_uni_sample,
         num_classes=num_classes,
         seed=opt.seed
     )
-    base_dataset = CustomDataset(base_data, base_labels, transform=eval_transformation)
+    base_rel_idx = np.asarray(base_rel_idx, dtype=np.int64)
+    base_abs_idx = sel_idx[base_rel_idx]
+
+    base_dataset = SubsetWithTransform(
+        train_dataset, base_abs_idx, transform=eval_transformation
+    )
+    # NOTE: If opt.num_base_data is large and you hit GPU OOM during evaluation,
+    # reduce this batch size from len(base_dataset) to a smaller value.
     eval_base_loader = torch.utils.data.DataLoader(
         base_dataset,
         batch_size=len(base_dataset),
@@ -603,7 +686,13 @@ def set_loader(opt, augment_type='weak', twoviews=False):
         pin_memory=True,
         sampler=None
     )
-    eval_test_dataset = CustomDataset(test_dataset.data, test_dataset.targets, transform=eval_transformation)
+
+    # Test & train evaluation datasets as lazy full-index subsets
+    eval_test_dataset = SubsetWithTransform(
+        test_dataset,
+        indices=np.arange(len(test_dataset), dtype=np.int64),
+        transform=eval_transformation
+    )
     eval_test_loader = torch.utils.data.DataLoader(
         eval_test_dataset,
         batch_size=test_batch_size,
@@ -612,7 +701,12 @@ def set_loader(opt, augment_type='weak', twoviews=False):
         pin_memory=True,
         sampler=None
     )
-    eval_train_dataset = CustomDataset(train_dataset.data, train_dataset.targets, transform=eval_transformation)
+
+    eval_train_dataset = SubsetWithTransform(
+        train_dataset,
+        indices=np.arange(len(train_dataset), dtype=np.int64),
+        transform=eval_transformation
+    )
     eval_train_loader = torch.utils.data.DataLoader(
         eval_train_dataset,
         batch_size=train_batch_size,
@@ -621,9 +715,10 @@ def set_loader(opt, augment_type='weak', twoviews=False):
         pin_memory=True,
         sampler=None
     )
-    
+
     return (label_train_dataset_score, label_train_loader_score, unlabel_train_loader), \
-            (eval_base_loader, eval_train_loader, eval_test_loader)
+           (eval_base_loader, eval_train_loader, eval_test_loader)
+
 
 # def set_loader(opt, loader_suffix='Sup', augment_type='weak', twoviews=False, p_label=False, train=True,
 #                score_dataset=False):
@@ -1128,51 +1223,46 @@ class DatasetWithScore(Dataset):
     def update_score(self, index, new_score):
         self.scores[index] = new_score
 
-    def select_base_data(self, num_samples, class_uniform_sample=False, seed=None, mode='random'):
+    def select_base_data(self, num_samples, class_uniform_sample=False, seed=None, mode='random', transform=None):
+        """Return a memory-friendly, index-only subset. No pre-stacked tensors."""
+        import random, numpy as np, torch
+
         if seed is not None:
-            random.seed(seed)
-            torch.manual_seed(seed)
+            random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
 
-        if mode == 'random':
-            if class_uniform_sample:
-                samples_per_class = num_samples // len(self.class_indices)
-                selected_indices = []
-                for indices in self.class_indices.values():
-                    selected_indices.extend(random.sample(indices, min(samples_per_class, len(indices))))
-            else:
-                selected_indices = random.sample(range(len(self)), num_samples)
+        # Build or reuse class->indices map using prepare_class_indices
+        class_map = getattr(self, "class_indices", None)
+        if not class_map:
+            class_map = prepare_class_indices(self.original_dataset)
+            self.class_indices = class_map
 
-        elif mode == 'score':
-            if class_uniform_sample:
-                samples_per_class = num_samples // len(self.class_indices)
-                selected_indices = []
-                for class_label, indices in self.class_indices.items():
-                    # Sort indices within each class based on scores
-                    sorted_class_indices = sorted(indices, key=lambda idx: self.scores[idx], reverse=True)
-                    selected_indices.extend(sorted_class_indices[:min(samples_per_class, len(indices))])
-            else:
-                sorted_indices = sorted(range(len(self)), key=lambda idx: self.scores[idx], reverse=True)
-                selected_indices = sorted_indices[:num_samples]
+        # Flatten scores for sorting if needed
+        scores = self.scores.detach().cpu().tolist() if isinstance(self.scores, torch.Tensor) else list(self.scores)
+
+        selected = []
+        if class_uniform_sample:
+            per_cls = max(1, num_samples // max(1, len(class_map)))
+            for _, idxs in class_map.items():
+                if mode == 'score':
+                    idxs = sorted(idxs, key=lambda i: scores[i], reverse=True)[:min(per_cls, len(idxs))]
+                else:
+                    idxs = random.sample(idxs, k=min(per_cls, len(idxs)))
+                selected.extend(idxs)
+            if len(selected) > num_samples:
+                selected = random.sample(selected, k=num_samples)
         else:
-            raise ValueError(mode)
+            if mode == 'score':
+                all_idx = sorted(range(len(self.original_dataset)), key=lambda i: scores[i], reverse=True)
+                selected = all_idx[:num_samples]
+            else:
+                selected = random.sample(range(len(self.original_dataset)), k=num_samples)
 
-        to_tensor_transform = transforms.ToTensor()  
-        tensors, labels = [], []
+        # Choose transform: prefer provided override
+        if transform is None and hasattr(self.original_dataset, "transform"):
+            transform = self.original_dataset.transform
 
-        for idx in selected_indices:
-            image, label = self.original_dataset[idx]
-            if not torch.is_tensor(image):
-                image = to_tensor_transform(image)
-            tensors.append(image)
-            labels.append(label)
-
-        base_dataset = CustomDataset(torch.stack(tensors),
-                                    torch.tensor(labels),
-                                    transform=None)
-        # base_loader = torch.utils.data.DataLoader(
-        #     base_dataset, batch_size=len(base_dataset), shuffle=True,
-        #     num_workers=opt.num_workers, pin_memory=True, sampler=None)
-        return base_dataset
+        # Return an index-based lazy subset; images are loaded/transformed in __getitem__
+        return SubsetWithTransform(self.original_dataset, selected, transform=transform)
 
     def __getitem__(self, index):
         data, label = self.original_dataset[index]

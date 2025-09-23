@@ -178,70 +178,103 @@ class LaplaceLearningSparseHard(torch.autograd.Function):
 
 
 def knn_sym_dist(data, k=25, epsilon='auto'):
+    """
+    Build a symmetrized kNN distance graph and compute edge kernels.
+    Memory-optimized: no dense n×n allocations at any step.
+
+    Returns:
+        W:     CSR sparse weight matrix
+        V:     CSR sparse derivative kernel wrt d^2 term
+        mod_V: CSR sparse extra kernel used when epsilon depends on X (auto); else 0
+        C:     CSR sparse selector with ones at (kth_neighbor, self) for each node when auto; else 0
+        knn_ind: (n, k) neighbor indices (possibly including self in the first column)
+    """
+
+    # kNN search (Euclidean). Many implementations include self as the 1st neighbor.
     method = 'annoy'
+    knn_ind, knn_dist = gl.weightmatrix.knnsearch(
+        data, k, similarity='euclidean', method=method
+    )
 
-    knn_ind, knn_dist = gl.weightmatrix.knnsearch(data, k, similarity='euclidean', method=method)
-
-    # Restrict to k nearest neighbors
+    # Truncate to the requested k (in case the backend returned more)
     n = knn_ind.shape[0]
-    k = np.minimum(knn_ind.shape[1], k)
+    k = int(min(knn_ind.shape[1], k))
     knn_ind = knn_ind[:, :k]
     knn_dist = knn_dist[:, :k]
 
-    # Self indices
-    self_ind = np.ones((n, k)) * np.arange(n)[:, None]
-    self_ind = self_ind.flatten()
+    # Build a directed sparse distance matrix Dist(i, j) = d(x_i, x_j)
+    # Use integer indices and float32 values to reduce memory.
+    self_ind = np.repeat(np.arange(n, dtype=np.int64), k)
+    nbr_ind = knn_ind.ravel().astype(np.int64, copy=False)
+    dist_vals = knn_dist.ravel().astype(np.float32, copy=False)
 
-    # Construct sparse matrix and convert to Compressed Sparse Row (CSR) format
-    Dist = sparse.coo_matrix((knn_dist.flatten(), (self_ind, knn_ind.flatten())), shape=(n, n)).tocsr()
-    Dist = Dist + Dist.T.multiply(Dist.T > Dist) - Dist.multiply(Dist.T > Dist)
-    rows, cols, values = sparse.find(Dist)
+    Dist = sparse.coo_matrix((dist_vals, (self_ind, nbr_ind)), shape=(n, n)).tocsr()
+
+    # Symmetrize by elementwise max (equivalent to "take existing edge if either direction exists")
+    # Then convert to COO to get row/col/data efficiently.
+    Dist = Dist.maximum(Dist.T).tocoo(copy=False)
+    rows = Dist.row.astype(np.int64, copy=False)
+    cols = Dist.col.astype(np.int64, copy=False)
+    values = Dist.data.astype(np.float32, copy=False)  # distances d_ij
 
     if epsilon == 'auto':
+        # Per-node bandwidth: epsilon_i = distance to the k-th neighbor of node i.
+        # With Euclidean metric, d(i,j) == d(j,i); using knn_dist is equivalent and cheaper.
+        eps = knn_dist[:, -1].astype(np.float32, copy=False)
 
-        # eps = Dist.max(axis=1).toarray().flatten() # NOTE: this is not in general = d_k(x_i) because of the symmetrization above
+        # Build C as a sparse matrix with ones at (kth_neighbor(i), i) for each i.
+        # This avoids dense n×n allocation entirely.
+        c_rows = knn_ind[:, -1].astype(np.int64, copy=False)  # kth neighbor indices
+        c_cols = knn_ind[:, 0].astype(np.int64, copy=False)   # "self" column (usually i)
+        C = sparse.csr_matrix(
+            (np.ones(n, dtype=np.float32), (c_rows, c_cols)),
+            shape=(n, n)
+        )
 
-        # Compute epsilon = d_k(x_i)
-        eps = Dist[knn_ind[:, 0], [knn_ind[:, -1]]].toarray().flatten()
+        # Compute weights and kernels
+        # W_ij = exp(-4 * d_ij^2 / (eps_i * eps_j))
+        # V_ij = d/d(d_ij^2) W_ij = -8 * exp(...) / (eps_i * eps_j)
+        denom = (eps[rows] * eps[cols]).astype(np.float32, copy=False)
+        d2 = (values * values).astype(np.float32, copy=False)
+        base = np.exp(-4.0 * d2 / denom)
 
-        # Construct C, # C_ij = 1 when i is kth nn of j, and -1 on the diag
-        # C = np.diag(-np.ones(n))
-        C = np.zeros((n, n))
+        W_values = base
+        V_values = (-8.0 * base / denom).astype(np.float32, copy=False)
 
-        C[knn_ind[:, -1], knn_ind[:, 0]] = 1
+        # mod_V encodes the chain rule contribution when epsilon depends on X
+        # mod_V_ij = (d_ij^2 / (2 * eps_i^2)) * V_ij
+        e2_i = (eps[rows] * eps[rows]).astype(np.float32, copy=False)
+        mod_V_values = (d2 * V_values / (2.0 * e2_i)).astype(np.float32, copy=False)
 
-        C = sparse.csr_matrix(C)
-
-        # Compute W, V, and mod_V
-        W_values = np.exp(-4 * values * values / eps[rows] / eps[cols])
-        V_values = -8 * np.exp(-4 * values * values / eps[rows] / eps[cols]) / eps[rows] / eps[cols]
-        mod_V_values = values * values * V_values / (eps[rows] ** 2) / 2
-
-        # Construct sparse matrix and convert to Compressed Sparse Row (CSR) format
         W = sparse.coo_matrix((W_values, (rows, cols)), shape=(n, n)).tocsr()
         V = sparse.coo_matrix((V_values, (rows, cols)), shape=(n, n)).tocsr()
         mod_V = sparse.coo_matrix((mod_V_values, (rows, cols)), shape=(n, n)).tocsr()
 
     else:
-        eps = epsilon * np.ones(n)
+        # Constant epsilon: no extra chain rule term needed
+        eps = (float(epsilon) * np.ones(n, dtype=np.float32))
 
-        # placeholders - don't need these quantities when eps is not a function of x
-        mod_V = 0
         C = 0
+        mod_V = 0
 
-        # compute W and V
-        W_values = np.exp(-4 * values * values / eps[rows] / eps[cols])
-        V_values = -8 * np.exp(-4 * values * values / eps[rows] / eps[cols]) / eps[rows] / eps[cols]
+        denom = (eps[rows] * eps[cols]).astype(np.float32, copy=False)
+        d2 = (values * values).astype(np.float32, copy=False)
+        base = np.exp(-4.0 * d2 / denom)
 
-        # Construct sparse matrix and convert to Compressed Sparse Row (CSR) format
+        W_values = base
+        V_values = (-8.0 * base / denom).astype(np.float32, copy=False)
+
         W = sparse.coo_matrix((W_values, (rows, cols)), shape=(n, n)).tocsr()
         V = sparse.coo_matrix((V_values, (rows, cols)), shape=(n, n)).tocsr()
 
+    # Numerical guard for extremely small epsilons
     if (eps < 1e-10).any():
+        import warnings
         warnings.warn("Epsilon in KNN is very close to zero.", UserWarning)
     eps = np.maximum(eps, 1e-6)
 
     return W, V, mod_V, C, knn_ind
+
 
 
 def stable_conjgrad(A, b, x0=None, max_iter=1e5, tol=1e-10):
