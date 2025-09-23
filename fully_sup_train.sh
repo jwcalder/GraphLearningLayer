@@ -5,15 +5,17 @@
 set -euo pipefail
 
 # -------- Edit here --------
+# each entry: "MODEL Num_train" Num_train can be 1000, 10000, or None
 PAIRS=(
-#   "vgg11 None"
+  # "vgg11 None"
   # "vgg13 None"
   # "resnet20 None"
   # "resnet32 None"
   # "resnet44 None"
   # "resnet56 None"
   # "resnet110 None"
-  "resnet18 None"
+  "resnet110 1000"
+  # "resnet18 None"
   # "preactresnet18 None"
   # "wrn-28-2 None"
 )
@@ -25,12 +27,12 @@ CONDENV=gll_compat
 if [[ ! -f "FullySup.py" && -f "../FullySup.py" ]]; then cd ..; fi
 if [[ ! -f "FullySup.py" ]]; then echo "FullySup.py not found."; exit 1; fi
 
-# Optional: conda activation
-if [[ -f "${HOME}/miniconda3/etc/profile.d/conda.sh" ]]; then
-  # shellcheck source=/dev/null
-  source "${HOME}/miniconda3/etc/profile.d/conda.sh" || true
-fi
-conda activate "$CONDENV" 2>/dev/null || true
+# # Optional: conda activation
+# if [[ -f "${HOME}/miniconda3/etc/profile.d/conda.sh" ]]; then
+#   # shellcheck source=/dev/null
+#   source "${HOME}/miniconda3/etc/profile.d/conda.sh" || true
+# fi
+# conda activate "$CONDENV" 2>/dev/null || true
 
 # Conservative CPU/BLAS settings (safer on older CPUs)
 export ATEN_CPU_CAPABILITY=avx2
