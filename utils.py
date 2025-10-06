@@ -1070,27 +1070,59 @@ def test_network(model, base_loader, test_loader, opt, predictor='GL'):
 def test_GL_NP(model, train_loader_ss, test_loader, opt, unlabel_train_loader=None):
     '''
     Transform to numpy and do standard Laplace learning test
+
+    Added:
+      - Print the counts of:
+          * test data
+          * labeled training data
+          * unlabeled training data (0 if not provided)
     '''
+    import numpy as np
+
     model.eval()
 
-    test_data, test_label = loader_to_numpy(test_loader, opt, model)
+    # Convert loaders to numpy (features + labels)
+    test_data,  test_label  = loader_to_numpy(test_loader, opt, model)
     train_data, train_label = loader_to_numpy(train_loader_ss, opt, model)
+
+    # Track counts
+    test_count     = len(test_data)
+    labeled_count  = len(train_data)
+    unlabeled_count = 0
+
+    # Optional unlabeled data
     if unlabel_train_loader is not None:
         unlabeled_train_data, unlabeled_train_label_new = loader_to_numpy(unlabel_train_loader, opt, model)
+        unlabeled_count = len(unlabeled_train_data)
         all_data = np.concatenate((train_data, unlabeled_train_data, test_data), axis=0)
     else:
         all_data = np.concatenate((train_data, test_data), axis=0)
 
-    U = laplace(all_data, train_label, knn_num=50, epsilon=opt.epsilon, n_classes='auto', tau=opt.tau)
-    pred = np.argmax(U, axis=1)
-    correct_num = np.sum(pred[-len(test_data):] == test_label)
-    total_test_num = len(test_data)
+    # Run Graph Laplacian predictor on the whole pool; only labeled targets are provided
+    U = laplace(
+        all_data,
+        train_label,
+        knn_num=50,
+        epsilon=opt.epsilon,
+        n_classes='auto',
+        tau=opt.tau
+    )
 
-    print('Test set: Accuracy for GL predictor (Num of train data: {})\t'
-        ': {}/{} ({:.2f}%)\n'.format(
-        len(train_data), correct_num, total_test_num,
-        100. * correct_num / total_test_num))
-    return 100. * correct_num / total_test_num
+    pred = np.argmax(U, axis=1)
+    correct_num = np.sum(pred[-test_count:] == test_label)
+    total_test_num = test_count
+    acc = 100. * correct_num / total_test_num
+
+    # Print detailed counts and accuracy
+    print(
+        'GL predictor evaluation:\n'
+        f'  Test samples       : {test_count}\n'
+        f'  Labeled train      : {labeled_count}\n'
+        f'  Unlabeled train    : {unlabeled_count}\n'
+        f'  Accuracy           : {correct_num}/{total_test_num} ({acc:.2f}%)\n'
+    )
+
+    return acc
 
 
 #### for pseudo label training
