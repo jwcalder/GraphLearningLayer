@@ -514,11 +514,224 @@ class FileLogger(object):
         self.terminal.flush()
         self.log.flush()
 
+# def set_loader(opt, augment_type='weak', twoviews=False):
+#     """
+#     Build dataloaders for (base, train) with memory-safe index-based sampling.
+
+#     Key points:
+#       - Avoids materializing large tensors during sampling (no torch.stack of whole subsets).
+#       - Uses index-only samplers: `sample_and_split_indices` / `sample_indices`.
+#       - Wraps subsets with `SubsetWithTransform` so images are loaded/transformed lazily in __getitem__.
+#       - Keeps default collate_fn so when `twoviews=True`, each batch yields:
+#           images: [ tensor(B, C, H, W), tensor(B, C, H, W) ]
+#           labels: tensor(B)
+#         which matches `images = torch.cat([images[0], images[1]], dim=0)` in train loops.
+#       - Supports (optional) DistributedSampler when `opt.distributed` is True.
+#       - Return signatures are unchanged.
+#     """
+#     import numpy as np
+#     import torch
+#     from torch.utils.data.distributed import DistributedSampler
+#     from torchvision import datasets
+
+#     # ----- Dataset config -----
+#     # Expect `datasets_setting` dict and its factory functions in the current module.
+#     if opt.dataset in ('cifar10', 'cifar100', 'mnist', 'fashion_mnist'):
+#         dataset_config = datasets_setting.__dict__[opt.dataset]()
+#     else:
+#         raise ValueError('dataset not supported: {}'.format(opt.dataset))
+
+#     weak_transformation = dataset_config['weak_transformation']
+#     strong_transformation = dataset_config['strong_transformation']
+#     eval_transformation  = dataset_config['eval_transformation']
+#     num_classes          = dataset_config['num_classes']
+
+#     # ----- Choose transform by augment_type -----
+#     if augment_type == 'no':
+#         base_transform = eval_transformation
+#     elif augment_type == 'weak':
+#         base_transform = weak_transformation
+#     else:
+#         base_transform = strong_transformation
+
+#     # For SimCLR: wrap transform to produce two views if requested
+#     # TwoCropTransform is expected to be defined in utils.py and returns [view1, view2]
+#     transform_for_train = TwoCropTransform(base_transform) if twoviews else base_transform
+
+#     # ----- Build torchvision datasets (transform=None; we will apply transforms lazily) -----
+#     if opt.dataset == 'cifar10':
+#         train_dataset = datasets.CIFAR10(root=opt.data_folder, transform=None, train=True,  download=True)
+#         test_dataset  = datasets.CIFAR10(root=opt.data_folder, transform=None, train=False, download=True)
+#     elif opt.dataset == 'cifar100':
+#         train_dataset = datasets.CIFAR100(root=opt.data_folder, transform=None, train=True,  download=True)
+#         test_dataset  = datasets.CIFAR100(root=opt.data_folder, transform=None, train=False, download=True)
+#     elif opt.dataset == 'mnist':
+#         train_dataset = datasets.MNIST(root=opt.data_folder, transform=None, train=True,  download=True)
+#         test_dataset  = datasets.MNIST(root=opt.data_folder, transform=None, train=False, download=True)
+#     elif opt.dataset == 'fashion_mnist':
+#         train_dataset = datasets.FashionMNIST(root=opt.data_folder, transform=None, train=True,  download=True)
+#         test_dataset  = datasets.FashionMNIST(root=opt.data_folder, transform=None, train=False, download=True)
+#     else:
+#         raise ValueError(opt.dataset)
+
+#     # ----- Optional downsample wrapper for the base dataset (unchanged behavior) -----
+#     if int(opt.ds_stepsize) > 1:
+#         # DSCustomDataset should act like a Dataset; SubsetWithTransform will wrap it later.
+#         train_dataset = DSCustomDataset(train_dataset, int(opt.ds_stepsize))
+
+#     # Determine number of labeled training samples
+#     if opt.num_train is None or opt.num_train > len(train_dataset):
+#         num_train = len(train_dataset)
+#     else:
+#         num_train = int(opt.num_train)
+
+#     # ----- Per-GPU batch size -----
+#     # Keep original behavior but ensure valid positive integers.
+#     train_batch_size = int(opt.batch_size)
+#     test_batch_size  = int(opt.test_batch_size)
+#     # Proportional labeled batch size; clamp to [1, train_batch_size]
+#     label_train_batch_size = max(1, min(train_batch_size, int(num_train / len(train_dataset) * train_batch_size)))
+#     unlabel_train_batch_size = max(0, train_batch_size - label_train_batch_size)
+
+#     # ----- Distributed knobs -----
+#     use_dist   = bool(getattr(opt, 'distributed', False))
+#     world_size = int(getattr(opt, 'world_size', 1))
+#     rank       = int(getattr(opt, 'rank', 0))
+
+#     # =========================
+#     # Train split (labeled / unlabeled) — index-based sampling
+#     # =========================
+#     sel_idx, rest_idx = sample_and_split_indices(
+#         train_dataset, num_train,
+#         class_uniform_sample=opt.class_uni_sample,
+#         num_classes=num_classes,
+#         seed=opt.seed
+#     )
+#     sel_idx  = np.asarray(sel_idx,  dtype=np.int64)
+#     rest_idx = np.asarray(rest_idx, dtype=np.int64)
+
+#     # Labeled train dataset (lazy transforms; two views if requested)
+#     label_train_dataset = SubsetWithTransform(
+#         train_dataset, sel_idx, transform=transform_for_train
+#     )
+
+#     # Unlabeled train loader (if there are remaining indices and a positive batch size)
+#     if len(rest_idx) > 0 and unlabel_train_batch_size > 0:
+#         unlabel_train_dataset = SubsetWithTransform(
+#             train_dataset, rest_idx, transform=transform_for_train
+#         )
+#         unlabel_train_sampler = DistributedSampler(unlabel_train_dataset,
+#                                                 num_replicas=world_size,
+#                                                 rank=rank,
+#                                                 shuffle=True) if use_dist else None
+#         unlabel_train_loader = torch.utils.data.DataLoader(
+#             unlabel_train_dataset,
+#             batch_size=unlabel_train_batch_size,
+#             shuffle=(unlabel_train_sampler is None),
+#             num_workers=opt.num_workers,
+#             pin_memory=True,
+#             sampler=unlabel_train_sampler,
+#             drop_last=True,
+#             collate_fn=None
+#         )
+#     else:
+#         unlabel_train_loader = None
+
+#     # ----- score training dataset loader (same labeled subset, but wrapped with DatasetWithScore) -----
+#     label_train_dataset_score = DatasetWithScore(label_train_dataset, scores=None)
+#     train_sampler_score = DistributedSampler(label_train_dataset_score,
+#                                             num_replicas=world_size,
+#                                             rank=rank,
+#                                             shuffle=True) if use_dist else None
+#     label_train_loader_score = torch.utils.data.DataLoader(
+#         label_train_dataset_score,
+#         batch_size=label_train_batch_size,
+#         shuffle=(train_sampler_score is None),
+#         num_workers=opt.num_workers,
+#         pin_memory=True,
+#         sampler=train_sampler_score,
+#         drop_last=True,
+#         collate_fn=None
+#     )
+
+#     # =========================
+#     # Evaluation loaders
+#     # =========================
+#     if opt.num_base_data >= num_train:
+#         raise ValueError("num_base_data must be smaller than num_train")
+
+#     # Base (prototype) set is sampled from the labeled pool, with eval transforms
+#     labeled_pool_for_eval = SubsetWithTransform(
+#         train_dataset, sel_idx, transform=eval_transformation
+#     )
+#     base_rel_idx = sample_indices(
+#         labeled_pool_for_eval, opt.num_base_data,
+#         class_uniform_sample=opt.class_uni_sample,
+#         num_classes=num_classes,
+#         seed=opt.seed
+#     )
+#     base_rel_idx = np.asarray(base_rel_idx, dtype=np.int64)
+#     base_abs_idx = sel_idx[base_rel_idx]
+
+#     base_dataset = SubsetWithTransform(
+#         train_dataset, base_abs_idx, transform=eval_transformation
+#     )
+#     # NOTE: If opt.num_base_data is large and you hit GPU OOM during evaluation,
+#     # reduce this batch size from len(base_dataset) to a smaller value.
+#     eval_base_loader = torch.utils.data.DataLoader(
+#         base_dataset,
+#         batch_size=len(base_dataset),
+#         shuffle=True,
+#         num_workers=opt.num_workers,
+#         pin_memory=True,
+#         sampler=None
+#     )
+
+#     # Test & train evaluation datasets as lazy full-index subsets
+#     eval_test_dataset = SubsetWithTransform(
+#         test_dataset,
+#         indices=np.arange(len(test_dataset), dtype=np.int64),
+#         transform=eval_transformation
+#     )
+#     eval_test_loader = torch.utils.data.DataLoader(
+#         eval_test_dataset,
+#         batch_size=test_batch_size,
+#         shuffle=True,
+#         num_workers=opt.num_workers,
+#         pin_memory=True,
+#         sampler=None
+#     )
+
+#     eval_train_dataset = SubsetWithTransform(
+#         train_dataset,
+#         indices=np.arange(len(train_dataset), dtype=np.int64),
+#         transform=eval_transformation
+#     )
+#     eval_train_loader = torch.utils.data.DataLoader(
+#         eval_train_dataset,
+#         batch_size=train_batch_size,
+#         shuffle=True,
+#         num_workers=opt.num_workers,
+#         pin_memory=True,
+#         sampler=None
+#     )
+
+#     return (label_train_dataset_score, label_train_loader_score, unlabel_train_loader), \
+#         (eval_base_loader, eval_train_loader, eval_test_loader)
+
+
 def set_loader(opt, augment_type='weak', twoviews=False):
     """
-    Build dataloaders for (base, train) with memory-safe index-based sampling.
+    Build dataloaders for (train) with memory-safe index-based sampling.
 
-    Key points:
+    Changes requested:
+      - Remove base/prototype loader logic entirely.
+      - Replace eval_base_loader and eval_train_loader with:
+          * eval_labeled_train_loader     (evaluates label_train_dataset with eval_transformation)
+          * eval_unlabeled_train_loader   (evaluates unlabel_train_dataset with eval_transformation; may be None)
+      - Keep eval_test_loader unchanged.
+
+    Key points (unchanged otherwise):
       - Avoids materializing large tensors during sampling (no torch.stack of whole subsets).
       - Uses index-only samplers: `sample_and_split_indices` / `sample_indices`.
       - Wraps subsets with `SubsetWithTransform` so images are loaded/transformed lazily in __getitem__.
@@ -527,7 +740,6 @@ def set_loader(opt, augment_type='weak', twoviews=False):
           labels: tensor(B)
         which matches `images = torch.cat([images[0], images[1]], dim=0)` in train loops.
       - Supports (optional) DistributedSampler when `opt.distributed` is True.
-      - Return signatures are unchanged.
     """
     import numpy as np
     import torch
@@ -535,7 +747,6 @@ def set_loader(opt, augment_type='weak', twoviews=False):
     from torchvision import datasets
 
     # ----- Dataset config -----
-    # Expect `datasets_setting` dict and its factory functions in the current module.
     if opt.dataset in ('cifar10', 'cifar100', 'mnist', 'fashion_mnist'):
         dataset_config = datasets_setting.__dict__[opt.dataset]()
     else:
@@ -555,10 +766,9 @@ def set_loader(opt, augment_type='weak', twoviews=False):
         base_transform = strong_transformation
 
     # For SimCLR: wrap transform to produce two views if requested
-    # TwoCropTransform is expected to be defined in utils.py and returns [view1, view2]
     transform_for_train = TwoCropTransform(base_transform) if twoviews else base_transform
 
-    # ----- Build torchvision datasets (transform=None; we will apply transforms lazily) -----
+    # ----- Build torchvision datasets (transform=None; transforms applied lazily) -----
     if opt.dataset == 'cifar10':
         train_dataset = datasets.CIFAR10(root=opt.data_folder, transform=None, train=True,  download=True)
         test_dataset  = datasets.CIFAR10(root=opt.data_folder, transform=None, train=False, download=True)
@@ -574,9 +784,8 @@ def set_loader(opt, augment_type='weak', twoviews=False):
     else:
         raise ValueError(opt.dataset)
 
-    # ----- Optional downsample wrapper for the base dataset (unchanged behavior) -----
+    # Optional downsample wrapper for the base dataset (unchanged behavior)
     if int(opt.ds_stepsize) > 1:
-        # DSCustomDataset should act like a Dataset; SubsetWithTransform will wrap it later.
         train_dataset = DSCustomDataset(train_dataset, int(opt.ds_stepsize))
 
     # Determine number of labeled training samples
@@ -585,11 +794,9 @@ def set_loader(opt, augment_type='weak', twoviews=False):
     else:
         num_train = int(opt.num_train)
 
-    # ----- Per-GPU batch size -----
-    # Keep original behavior but ensure valid positive integers.
+    # ----- Per-GPU batch sizes -----
     train_batch_size = int(opt.batch_size)
     test_batch_size  = int(opt.test_batch_size)
-    # Proportional labeled batch size; clamp to [1, train_batch_size]
     label_train_batch_size = max(1, min(train_batch_size, int(num_train / len(train_dataset) * train_batch_size)))
     unlabel_train_batch_size = max(0, train_batch_size - label_train_batch_size)
 
@@ -615,15 +822,17 @@ def set_loader(opt, augment_type='weak', twoviews=False):
         train_dataset, sel_idx, transform=transform_for_train
     )
 
-    # Unlabeled train loader (if there are remaining indices and a positive batch size)
+    # Unlabeled train dataset/loader (may be None)
     if len(rest_idx) > 0 and unlabel_train_batch_size > 0:
         unlabel_train_dataset = SubsetWithTransform(
             train_dataset, rest_idx, transform=transform_for_train
         )
-        unlabel_train_sampler = DistributedSampler(unlabel_train_dataset,
-                                                num_replicas=world_size,
-                                                rank=rank,
-                                                shuffle=True) if use_dist else None
+        unlabel_train_sampler = DistributedSampler(
+            unlabel_train_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True
+        ) if use_dist else None
         unlabel_train_loader = torch.utils.data.DataLoader(
             unlabel_train_dataset,
             batch_size=unlabel_train_batch_size,
@@ -635,14 +844,17 @@ def set_loader(opt, augment_type='weak', twoviews=False):
             collate_fn=None
         )
     else:
+        unlabel_train_dataset = None
         unlabel_train_loader = None
 
     # ----- score training dataset loader (same labeled subset, but wrapped with DatasetWithScore) -----
     label_train_dataset_score = DatasetWithScore(label_train_dataset, scores=None)
-    train_sampler_score = DistributedSampler(label_train_dataset_score,
-                                            num_replicas=world_size,
-                                            rank=rank,
-                                            shuffle=True) if use_dist else None
+    train_sampler_score = DistributedSampler(
+        label_train_dataset_score,
+        num_replicas=world_size,
+        rank=rank,
+        shuffle=True
+    ) if use_dist else None
     label_train_loader_score = torch.utils.data.DataLoader(
         label_train_dataset_score,
         batch_size=label_train_batch_size,
@@ -655,39 +867,39 @@ def set_loader(opt, augment_type='weak', twoviews=False):
     )
 
     # =========================
-    # Evaluation loaders
+    # Evaluation loaders (updated)
     # =========================
-    if opt.num_base_data >= num_train:
-        raise ValueError("num_base_data must be smaller than num_train")
-
-    # Base (prototype) set is sampled from the labeled pool, with eval transforms
-    labeled_pool_for_eval = SubsetWithTransform(
+    # Evaluate labeled subset with eval transforms
+    eval_labeled_train_dataset = SubsetWithTransform(
         train_dataset, sel_idx, transform=eval_transformation
     )
-    base_rel_idx = sample_indices(
-        labeled_pool_for_eval, opt.num_base_data,
-        class_uniform_sample=opt.class_uni_sample,
-        num_classes=num_classes,
-        seed=opt.seed
-    )
-    base_rel_idx = np.asarray(base_rel_idx, dtype=np.int64)
-    base_abs_idx = sel_idx[base_rel_idx]
-
-    base_dataset = SubsetWithTransform(
-        train_dataset, base_abs_idx, transform=eval_transformation
-    )
-    # NOTE: If opt.num_base_data is large and you hit GPU OOM during evaluation,
-    # reduce this batch size from len(base_dataset) to a smaller value.
-    eval_base_loader = torch.utils.data.DataLoader(
-        base_dataset,
-        batch_size=len(base_dataset),
+    eval_labeled_train_loader = torch.utils.data.DataLoader(
+        eval_labeled_train_dataset,
+        batch_size=label_train_batch_size if label_train_batch_size > 0 else 1,
         shuffle=True,
         num_workers=opt.num_workers,
         pin_memory=True,
         sampler=None
     )
 
-    # Test & train evaluation datasets as lazy full-index subsets
+    # Evaluate unlabeled subset with eval transforms (None-safe)
+    if unlabel_train_dataset is not None:
+        # Re-wrap using eval transform on the same indices (rest_idx)
+        eval_unlabeled_train_dataset = SubsetWithTransform(
+            train_dataset, rest_idx, transform=eval_transformation
+        )
+        eval_unlabeled_train_loader = torch.utils.data.DataLoader(
+            eval_unlabeled_train_dataset,
+            batch_size=unlabel_train_batch_size if unlabel_train_batch_size > 0 else 1,
+            shuffle=True,
+            num_workers=opt.num_workers,
+            pin_memory=True,
+            sampler=None
+        )
+    else:
+        eval_unlabeled_train_loader = None
+
+    # Test evaluation dataset (full test set with eval transforms)
     eval_test_dataset = SubsetWithTransform(
         test_dataset,
         indices=np.arange(len(test_dataset), dtype=np.int64),
@@ -702,247 +914,10 @@ def set_loader(opt, augment_type='weak', twoviews=False):
         sampler=None
     )
 
-    eval_train_dataset = SubsetWithTransform(
-        train_dataset,
-        indices=np.arange(len(train_dataset), dtype=np.int64),
-        transform=eval_transformation
-    )
-    eval_train_loader = torch.utils.data.DataLoader(
-        eval_train_dataset,
-        batch_size=train_batch_size,
-        shuffle=True,
-        num_workers=opt.num_workers,
-        pin_memory=True,
-        sampler=None
-    )
-
+    # Return without base loader; provide labeled/unlabeled eval loaders instead
     return (label_train_dataset_score, label_train_loader_score, unlabel_train_loader), \
-           (eval_base_loader, eval_train_loader, eval_test_loader)
+        (eval_labeled_train_loader, eval_unlabeled_train_loader, eval_test_loader)
 
-
-# def set_loader(opt, loader_suffix='Sup', augment_type='weak', twoviews=False, p_label=False, train=True,
-#                score_dataset=False):
-#     if opt.dataset == 'cifar10' or opt.dataset == 'cifar100':
-#         dataset_config = datasets_setting.__dict__[opt.dataset]()
-#     elif opt.dataset == 'mnist' or opt.dataset == 'fashion_mnist':
-#         dataset_config = datasets_setting.__dict__[opt.dataset]()
-#     else:
-#         raise ValueError('dataset not supported: {}'.format(opt.dataset))
-
-#     weak_transformation = dataset_config['weak_transformation']
-#     strong_transformation = dataset_config['strong_transformation']
-#     eval_transformation = dataset_config['eval_transformation']
-#     num_classes = dataset_config['num_classes']
-
-#     print(f'Loader_mode: {loader_suffix}; Augment_type: {augment_type}.')
-
-#     if augment_type == 'no':
-#         transform = eval_transformation
-#     elif augment_type == 'weak':
-#         transform = weak_transformation
-#     else:
-#         transform = strong_transformation
-
-#     # for simclr
-#     if twoviews:
-#         transform = TwoCropTransform(transform)
-
-#     if opt.dataset == 'cifar10':
-#         dataset = datasets.CIFAR10(root=opt.data_folder,
-#                                    transform=None,
-#                                    train=True,
-#                                    download=True)
-#         train_dataset = datasets.CIFAR10(root=opt.data_folder,
-#                                          transform=transform,
-#                                          train=train,
-#                                          download=True)
-#     elif opt.dataset == 'mnist':
-#         dataset = datasets.MNIST(root=opt.data_folder,
-#                                  transform=None,
-#                                  train=True,
-#                                  download=True)
-#         train_dataset = datasets.MNIST(root=opt.data_folder,
-#                                        transform=transform,
-#                                        train=train,
-#                                        download=True)
-#     elif opt.dataset == 'fashion_mnist':
-#         dataset = datasets.FashionMNIST(root=opt.data_folder,
-#                                         transform=None,
-#                                         train=True,
-#                                         download=True)
-
-#         train_dataset = datasets.FashionMNIST(root=opt.data_folder,
-#                                               transform=transform,
-#                                               train=train,
-#                                               download=True)
-#     else:
-#         raise ValueError(opt.dataset)
-
-#     if int(opt.ds_stepsize) > 1:
-#         dataset = DSCustomDataset(dataset, int(opt.ds_stepsize))
-
-#     if train:
-#         batch_size = opt.batch_size
-#     else:
-#         batch_size = opt.test_batch_size
-
-#     base_data, base_labels = sample_dataset(dataset, opt.num_base_data, class_uniform_sample=opt.class_uni_sample,
-#                                             num_classes=num_classes, seed=opt.seed)
-#     base_dataset = CustomDataset(base_data,
-#                                  base_labels,
-#                                  transform=transform)
-
-#     base_loader = torch.utils.data.DataLoader(
-#         base_dataset, batch_size=len(base_dataset), shuffle=True,
-#         num_workers=opt.num_workers, pin_memory=True, sampler=None)
-
-#     if score_dataset:
-#         train_dataset_new = DatasetWithScore(train_dataset, scores=None)
-
-#         train_loader = torch.utils.data.DataLoader(
-#             train_dataset_new, batch_size=batch_size, shuffle=True,
-#             num_workers=opt.num_workers, pin_memory=True, sampler=None, drop_last=True)
-#         return base_loader, train_loader, train_dataset_new
-#     elif p_label:
-#         train_dataset_new = DatasetWithPseudoLabel(train_dataset, pred_outputs=None,
-#                                                    pred_labels=None, num_classes=num_classes)
-
-#         train_loader = torch.utils.data.DataLoader(
-#             train_dataset_new, batch_size=batch_size, shuffle=True,
-#             num_workers=opt.num_workers, pin_memory=True, sampler=None, drop_last=True)
-#         return base_loader, train_loader, train_dataset_new
-#     else:
-#         train_loader = torch.utils.data.DataLoader(
-#             train_dataset, batch_size=batch_size, shuffle=True,
-#             num_workers=opt.num_workers, pin_memory=True, sampler=None, drop_last=True)
-#         return base_loader, train_loader
-
-
-
-# def set_loader_sup(opt, loader_mode='Sup', p_label=False):
-#     '''
-#     loader_mode should be chosen from ['Sup','SimCLR','SS','Eval']
-#     '''
-#     if opt.dataset == 'cifar10' or opt.dataset == 'cifar100':
-#         dataset_config = datasets_setting.__dict__[opt.dataset]()
-#     else:
-#         raise ValueError('dataset not supported: {}'.format(opt.dataset))
-
-#     weak_transformation = dataset_config['weak_transformation']
-#     strong_transformation = dataset_config['strong_transformation']
-#     eval_transformation = dataset_config['eval_transformation']
-#     num_classes = dataset_config['num_classes']
-
-#     if loader_mode == 'Sup':
-#         print(f'Supervised augmentation: {opt.augment_type_sup}.')
-#         if opt.dataset == 'cifar10':
-#             dataset = datasets.CIFAR10(root=opt.data_folder,
-#                                        transform=None,
-#                                        train=True,
-#                                        download=True)
-#         else:
-#             raise ValueError(opt.dataset)
-
-#         base_data, base_labels = sample_dataset(dataset, opt.num_base_data, class_uniform_sample=opt.class_uni_sample,
-#                                                 num_classes=num_classes, seed=opt.seed)
-#         if opt.augment_type_sup == 'no':
-#             transform = eval_transformation
-#         elif opt.augment_type_sup == 'weak':
-#             transform = weak_transformation
-#         else:
-#             transform = strong_transformation
-#         if opt.sup_method == 'SupCon':
-#             transform = TwoCropTransform(transform)
-#         base_dataset = CustomDataset(base_data,
-#                                      base_labels,
-#                                      transform=transform)
-
-#         if p_label:
-#             base_dataset_new = DatasetWithPseudoLabel(base_dataset, pred_outputs=None,
-#                                                       pred_labels=None, num_classes=num_classes)
-#             base_loader = torch.utils.data.DataLoader(
-#                 base_dataset_new, batch_size=len(base_dataset), shuffle=True,
-#                 num_workers=opt.num_workers, pin_memory=True, sampler=None)
-#             return base_loader, base_dataset_new
-#         else:
-#             base_loader = torch.utils.data.DataLoader(
-#                 base_dataset, batch_size=len(base_dataset), shuffle=True,
-#                 num_workers=opt.num_workers, pin_memory=True, sampler=None)
-#             return base_loader
-#     elif loader_mode == 'SimCLR' or loader_mode == 'SS':
-#         print(f'Semi-supervised augmentation: {opt.augment_type_ss}.')
-#         if opt.augment_type_ss == 'no':
-#             transform = eval_transformation
-#         elif opt.augment_type_ss == 'weak':
-#             transform = weak_transformation
-#         else:
-#             transform = strong_transformation
-
-#         # for simclr
-#         if loader_mode == 'SimCLR':
-#             transform = TwoCropTransform(transform)
-
-#         if opt.dataset == 'cifar10':
-#             base_dataset = datasets.CIFAR10(root=opt.data_folder,
-#                                             transform=None,
-#                                             train=True,
-#                                             download=True)
-#             train_dataset = datasets.CIFAR10(root=opt.data_folder,
-#                                              transform=transform,
-#                                              train=True,
-#                                              download=True)
-#         else:
-#             raise ValueError(opt.dataset)
-
-#         base_data, base_labels = sample_dataset(base_dataset, opt.num_base_data, class_uniform_sample=opt.class_uni_sample,
-#                                                 num_classes=num_classes, seed=opt.seed)
-#         base_dataset = CustomDataset(base_data,
-#                                      base_labels,
-#                                      transform=transform)
-#         train_sampler = None
-#         base_loader = torch.utils.data.DataLoader(
-#             base_dataset, batch_size=len(base_dataset), shuffle=(train_sampler is None),
-#             num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler)
-#         if p_label:
-#             train_dataset_new = DatasetWithPseudoLabel(base_dataset, pred_outputs=None,
-#                                                       pred_labels=None, num_classes=num_classes)
-#             train_loader = torch.utils.data.DataLoader(
-#                 train_dataset_new, batch_size=opt.batch_size, shuffle=(train_sampler is None),
-#                 num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler, drop_last=True)
-#             return base_loader, train_loader, train_dataset_new
-#         else:
-#             train_loader = torch.utils.data.DataLoader(
-#                 train_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
-#                 num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler, drop_last=True)
-#             return base_loader, train_loader
-#     elif loader_mode == 'Eval':
-#         print(f'Evaluation with no augmentation.')
-#         if opt.dataset == 'cifar10':
-#             train_dataset = datasets.CIFAR10(root=opt.data_folder,
-#                                              transform=eval_transformation,
-#                                              train=True,
-#                                              download=True)
-#             test_dataset = datasets.CIFAR10(root=opt.data_folder,
-#                                             transform=eval_transformation,
-#                                             train=False,
-#                                             download=True)
-#         else:
-#             raise ValueError(opt.dataset)
-#         base_data, base_labels = sample_dataset(train_dataset, opt.num_base_data, class_uniform_sample=opt.class_uni_sample,
-#                                                 num_classes=num_classes, seed=opt.seed)
-#         base_dataset = CustomDataset(base_data,
-#                                      base_labels,
-#                                      transform=None)
-#         train_sampler = None
-#         base_loader = torch.utils.data.DataLoader(
-#             base_dataset, batch_size=len(base_dataset), shuffle=(train_sampler is None),
-#             num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler, drop_last=False)
-#         test_loader = torch.utils.data.DataLoader(
-#             test_dataset, batch_size=opt.batch_size, shuffle=(train_sampler is None),
-#             num_workers=opt.num_workers, pin_memory=True, sampler=train_sampler, drop_last=False)
-#         return base_loader, test_loader
-#     else:
-#         raise ValueError(loader_mode)
 
 
 def set_model(opt):
@@ -1092,16 +1067,16 @@ def test_network(model, base_loader, test_loader, opt, predictor='GL'):
     return 100. * correct_num / data_count
 
 
-def test_GL_NP(model, base_loader, test_loader, opt, train_loader=None):
+def test_GL_NP(model, train_loader_ss, test_loader, opt, unlabel_train_loader=None):
     '''
     Transform to numpy and do standard Laplace learning test
     '''
     model.eval()
 
     test_data, test_label = loader_to_numpy(test_loader, opt, model)
-    train_data, train_label = loader_to_numpy(base_loader, opt, model)
-    if train_loader is not None:
-        unlabeled_train_data, unlabeled_train_label_new = loader_to_numpy(train_loader, opt, model)
+    train_data, train_label = loader_to_numpy(train_loader_ss, opt, model)
+    if unlabel_train_loader is not None:
+        unlabeled_train_data, unlabeled_train_label_new = loader_to_numpy(unlabel_train_loader, opt, model)
         all_data = np.concatenate((train_data, unlabeled_train_data, test_data), axis=0)
     else:
         all_data = np.concatenate((train_data, test_data), axis=0)

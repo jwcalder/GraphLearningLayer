@@ -193,7 +193,7 @@ def main(opt):
     # Build data loaders
     train_loaders, eval_loaders = set_loader(opt, augment_type=opt.augment_type)
     train_dataset_ss, train_loader_ss, unlabel_train_loader = train_loaders
-    base_loader_eval, train_loader_eval, test_loader_eval = eval_loaders
+    eval_labeled_train_loader, eval_unlabeled_train_loader, test_loader_eval = eval_loaders
 
     print("✓ Data loaders generated successfully.")
 
@@ -205,8 +205,8 @@ def main(opt):
     print_loader_info("unlabel_train_loader", unlabel_train_loader)
 
     # Eval loaders
-    print_loader_info("base_loader_eval", base_loader_eval)
-    print_loader_info("train_loader_eval", train_loader_eval)
+    print_loader_info("eval_labeled_train_loader", eval_labeled_train_loader)
+    print_loader_info("eval_unlabeled_train_loader", eval_unlabeled_train_loader)
     print_loader_info("test_loader_eval", test_loader_eval)
 
     # Build model and optimizer
@@ -222,10 +222,10 @@ def main(opt):
     epoch = 0
     plot_epochs.append(epoch)
     if opt.sup_train_type == 'gl':
-        test_acc = test_GL_NP(model, base_loader_eval, test_loader_eval, opt, train_loader=train_loader_eval)
+        test_acc = test_GL_NP(model, eval_labeled_train_loader, test_loader_eval, opt, unlabel_train_loader=eval_unlabeled_train_loader)
     elif opt.sup_train_type == 'mlp':
-        _ = test_GL_NP(model, base_loader_eval, test_loader_eval, opt, train_loader=train_loader_eval)
-        test_acc = test_network(model, base_loader_eval, test_loader_eval, opt, predictor='MLP')
+        _ = test_GL_NP(model, eval_labeled_train_loader, test_loader_eval, opt, unlabel_train_loader=eval_unlabeled_train_loader)
+        test_acc = test_network(model, eval_labeled_train_loader, test_loader_eval, opt, predictor='MLP')
     else:
         raise ValueError(opt.sup_train_type)
     test_acc_record.append(test_acc)
@@ -285,10 +285,10 @@ def main(opt):
         if epoch % opt.plot_freq_ss == 0:
             plot_epochs.append(epoch)
             if opt.sup_train_type == 'gl':
-                test_acc = test_GL_NP(model, base_loader_eval, test_loader_eval, opt, train_loader=train_loader_eval)
+                test_acc = test_GL_NP(model, eval_labeled_train_loader, test_loader_eval, opt, unlabel_train_loader=eval_unlabeled_train_loader)
             elif opt.sup_train_type == 'mlp':
-                _ = test_GL_NP(model, base_loader_eval, test_loader_eval, opt, train_loader=train_loader_eval)
-                test_acc = test_network(model, base_loader_eval, test_loader_eval, opt, predictor='MLP')
+                _ = test_GL_NP(model, eval_labeled_train_loader, test_loader_eval, opt, unlabel_train_loader=eval_unlabeled_train_loader)
+                test_acc = test_network(model, eval_labeled_train_loader, test_loader_eval, opt, predictor='MLP')
             else:
                 raise ValueError(opt.sup_train_type)
             test_acc_record.append(test_acc)

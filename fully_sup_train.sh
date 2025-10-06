@@ -7,17 +7,16 @@ set -euo pipefail
 # -------- Edit here --------
 # each entry: "MODEL Num_train" Num_train can be 1000, 10000, or None
 PAIRS=(
-  # "vgg11 None"
-  # "vgg13 None"
-  # "resnet20 None"
-  # "resnet32 None"
-  # "resnet44 None"
-  # "resnet56 None"
-  # "resnet110 None"
-  "resnet110 1000"
-  # "resnet18 None"
-  # "preactresnet18 None"
-  # "wrn-28-2 None"
+  "vgg11 None"
+  "vgg13 None"
+  "resnet20 None"
+  "resnet32 None"
+  "resnet44 None"
+  "resnet56 None"
+  "resnet110 None"
+  "resnet18 None"
+  "preactresnet18 None"
+  "wrn-28-2 None"
 )
 SLEEP_BETWEEN_JOBS=0
 CONDENV=gll_compat
