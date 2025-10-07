@@ -329,7 +329,7 @@ def main(opt):
     save_model(model, optimizer, opt, opt.epochs, save_file)
 
     path = os.path.join(opt.save_folder, 'ckpt_epoch_{epoch}'.format(epoch=opt.epochs))
-    visualize(save_file, opt.model, base=base_loader_eval, TSNE=opt.TSNE,
+    visualize(save_file, opt.model, base=test_loader_eval, TSNE=opt.TSNE,
               head=True, save_dir=path, head_type=opt.head_type)
 
     record_path = os.path.join(opt.save_folder, 'loss_acc_records.npy')
