@@ -5,6 +5,6 @@ pillow
 graphlearning
 scipy
 matplotlib
-umap
+umap-learn
 scikit-learn
 annoy
