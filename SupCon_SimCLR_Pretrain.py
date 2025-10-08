@@ -222,7 +222,7 @@ def main_worker(local_rank, opt):
             current_loader.sampler.set_epoch(epoch)
 
         loss = train(current_loader, model, criterion_supcon, criterion_simclr, optimizer,
-                     epoch, opt, gamma, tau_supcon, tau_simclr)
+                     epoch, opt, gamma)
 
         if master:
             print(f'[Joint SupCon+SimCLR] Epoch {epoch}, TotalLoss {loss:.4f}, '

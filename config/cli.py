@@ -111,7 +111,7 @@ def parse_option():
                         help='alpha for the sym CE loss.')
     parser.add_argument('--tau_supcon', type=float, default=0.07,
                     help='Temperature for SupCon loss.')
-    parser.add_argument('--tau_simclr', type=float, default=0.15,
+    parser.add_argument('--tau_simclr', type=float, default=0.25,
                         help='Temperature for SimCLR loss.')
     parser.add_argument('--gamma', type=float, default=0.5,
                         help='Weight for SupCon in the joint loss; total loss = gamma*SupCon + (1-gamma)*SimCLR.')
