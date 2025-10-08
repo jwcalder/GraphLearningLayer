@@ -720,7 +720,7 @@ class FileLogger(object):
 #         (eval_base_loader, eval_train_loader, eval_test_loader)
 
 
-def set_loader(opt, augment_type='weak', twoviews=False):
+def set_loader(opt, augment_type='weak', twoviews=False, return_full=False):
     """
     Build dataloaders for (train) with memory-safe index-based sampling.
 
@@ -730,6 +730,9 @@ def set_loader(opt, augment_type='weak', twoviews=False):
           * eval_labeled_train_loader     (evaluates label_train_dataset with eval_transformation)
           * eval_unlabeled_train_loader   (evaluates unlabel_train_dataset with eval_transformation; may be None)
       - Keep eval_test_loader unchanged.
+      - NEW: if `return_full=True`, also return:
+          * full_train_loader        (entire training set with train-time transform)
+          * full_eval_train_loader   (entire training set with eval transform)
 
     Key points (unchanged otherwise):
       - Avoids materializing large tensors during sampling (no torch.stack of whole subsets).
@@ -914,9 +917,63 @@ def set_loader(opt, augment_type='weak', twoviews=False):
         sampler=None
     )
 
-    # Return without base loader; provide labeled/unlabeled eval loaders instead
-    return (label_train_dataset_score, label_train_loader_score, unlabel_train_loader), \
-        (eval_labeled_train_loader, eval_unlabeled_train_loader, eval_test_loader)
+    # =========================
+    # Optional: full-train loaders (entire training set)
+    # =========================
+    full_train_loader = None
+    full_eval_train_loader = None
+    if return_full:
+        # Full training dataset with train-time transform (lazily applied)
+        full_train_dataset = SubsetWithTransform(
+            train_dataset,
+            indices=np.arange(len(train_dataset), dtype=np.int64),
+            transform=transform_for_train
+        )
+        full_train_sampler = DistributedSampler(
+            full_train_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True
+        ) if use_dist else None
+        full_train_loader = torch.utils.data.DataLoader(
+            full_train_dataset,
+            batch_size=train_batch_size,
+            shuffle=(full_train_sampler is None),
+            num_workers=opt.num_workers,
+            pin_memory=True,
+            sampler=full_train_sampler,
+            drop_last=True,
+            collate_fn=None
+        )
+
+        # Full training dataset with eval-time transform
+        full_eval_train_dataset = SubsetWithTransform(
+            train_dataset,
+            indices=np.arange(len(train_dataset), dtype=np.int64),
+            transform=eval_transformation
+        )
+        full_eval_train_loader = torch.utils.data.DataLoader(
+            full_eval_train_dataset,
+            batch_size=train_batch_size if train_batch_size > 0 else 1,
+            shuffle=True,
+            num_workers=opt.num_workers,
+            pin_memory=True,
+            sampler=None
+        )
+
+    # =========================
+    # Return
+    # =========================
+    train_tuple = (label_train_dataset_score, label_train_loader_score, unlabel_train_loader)
+    eval_tuple  = (eval_labeled_train_loader, eval_unlabeled_train_loader, eval_test_loader)
+
+    # Append full loaders if requested
+    if return_full:
+        train_tuple = train_tuple + (full_train_loader,)
+        eval_tuple  = eval_tuple + (full_eval_train_loader,)
+
+    return train_tuple, eval_tuple
+
 
 
 
@@ -935,7 +992,7 @@ def set_model(opt):
     if opt.model == 'customCNN' and (opt.dataset == 'mnist' or opt.dataset == 'fashion_mnist'):
         model = customCNN()
     else:
-        is_contrastive_pretrain = getattr(opt, "pretrain_method", "") in ["SimCLR", "SupCon"] \
+        is_contrastive_pretrain = getattr(opt, "pretrain_method", "") in ["SimCLR", "SupCon", "combined"] \
                                     and getattr(opt, 'distributed', False)
 
         model = buildnet(

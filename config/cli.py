@@ -92,7 +92,7 @@ def parse_option():
 
     # method
     parser.add_argument('--pretrain_method', type=str, default='',
-                        choices=['', 'SimCLR', 'SupCon'], help='choose method')
+                        choices=['', 'SimCLR', 'SupCon', 'combined'], help='choose method')
     parser.add_argument('--embedding_dim', type=int, default=128,
                         help='dimension of latent features')
     parser.add_argument('--head_type', type=str, default='mlp',
@@ -109,6 +109,13 @@ def parse_option():
                         help='epsilon for knn weight matrix, can be auto or any float.')
     parser.add_argument('--alpha', type=float, default=1,
                         help='alpha for the sym CE loss.')
+    parser.add_argument('--tau_supcon', type=float, default=0.07,
+                    help='Temperature for SupCon loss.')
+    parser.add_argument('--tau_simclr', type=float, default=0.15,
+                        help='Temperature for SimCLR loss.')
+    parser.add_argument('--gamma', type=float, default=0.5,
+                        help='Weight for SupCon in the joint loss; total loss = gamma*SupCon + (1-gamma)*SimCLR.')
+
 
     # uncertainty parameters
     parser.add_argument('--beta', type=float, default=0,
