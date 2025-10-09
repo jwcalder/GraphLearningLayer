@@ -1,22 +1,15 @@
 #!/usr/bin/env bash
-# Run FullySup.py locally for preset (MODEL, NUM_TRAIN[, CP_PATH]) tuples.
-# Edit PAIRS below, then: ./fullysup_train_batch_local.sh
+# Run FullySup.py locally for preset trials: MODEL, NUM_TRAIN, PRETRAIN_METHOD, GAMMA, SUP_TRAIN_TYPE
+# Edit TRIALS below, then: ./fullysup_train_batch_local.sh
 
 set -euo pipefail
 
 # -------- Edit here --------
-# each entry: "MODEL Num_train" Num_train can be 1000, 10000, or None
-PAIRS=(
-  "vgg11 None"
-  "vgg13 None"
-  "resnet20 None"
-  "resnet32 None"
-  "resnet44 None"
-  "resnet56 None"
-  "resnet110 None"
-  "resnet18 None"
-  "preactresnet18 None"
-  "wrn-28-2 None"
+# Format: "MODEL NUM_TRAIN PRETRAIN_METHOD GAMMA SUP_TRAIN_TYPE"
+TRIALS=(
+  "preactresnet18 None combined 0.5 gl"
+  "preactresnet18 10000 combined 0.5 gl"
+  "preactresnet18 1000 combined 0.5 gl"
 )
 SLEEP_BETWEEN_JOBS=0
 CONDENV=gll_compat
@@ -44,27 +37,37 @@ export MKL_NUM_THREADS=1
 run_one() {
   local MODEL="$1"
   local NUM_TRAIN="$2"
-  local CP_PATH="${3:-save/PreTrain_SimCLR/${MODEL}_bsz_512_None_ssaug_strong/ckpt_epoch_1000.pth}"
+  local PRETRAIN_METHOD="$3"
+  local GAMMA="$4"
+  local SUP_TRAIN_TYPE="$5"
 
-  if [[ -z "$MODEL" || -z "$NUM_TRAIN" ]]; then
-    echo "[SKIP] Invalid tuple: '$MODEL' '$NUM_TRAIN'"; return 0; fi
+  if [[ -z "$MODEL" || -z "$NUM_TRAIN" || -z "$PRETRAIN_METHOD" || -z "$GAMMA" || -z "$SUP_TRAIN_TYPE" ]]; then
+    echo "[SKIP] Invalid trial: '$MODEL' '$NUM_TRAIN' '$PRETRAIN_METHOD' '$GAMMA' '$SUP_TRAIN_TYPE'"
+    return 0
+  fi
+
   if [[ "$NUM_TRAIN" != "None" && ! "$NUM_TRAIN" =~ ^[0-9]+$ ]]; then
-    echo "[SKIP] NUM_TRAIN must be integer or 'None'."; return 0; fi
+    echo "[SKIP] NUM_TRAIN must be integer or 'None'."; return 0
+  fi
+
+  local CP_PATH="save/PreTrain_${PRETRAIN_METHOD}/${MODEL}_bsz_512_${NUM_TRAIN}_ssaug_strong_gamma_${GAMMA}/pretrain_joint_ckpt_epoch_1000.pth"
   if [[ ! -f "$CP_PATH" ]]; then
-    echo "[SKIP] Checkpoint not found: $CP_PATH"; return 0; fi
+    echo "[SKIP] Checkpoint not found: $CP_PATH"; return 0
+  fi
 
   local EXTRA_ARGS=()
   [[ "$NUM_TRAIN" != "None" ]] && EXTRA_ARGS+=(--num_train "$NUM_TRAIN")
 
-  echo "==> MODEL=$MODEL NUM_TRAIN=$NUM_TRAIN"
+  echo "==> MODEL=$MODEL NUM_TRAIN=$NUM_TRAIN PRETRAIN_METHOD=$PRETRAIN_METHOD GAMMA=$GAMMA SUP_TRAIN_TYPE=$SUP_TRAIN_TYPE"
   set -x
   python3 FullySup.py \
     --model "${MODEL}" \
     --dataset cifar10 \
     --plot_freq_ss 50 \
     --cosine \
-    --sup_train_type gl \
+    --sup_train_type "${SUP_TRAIN_TYPE}" \
     --cp_load_path "${CP_PATH}" \
+    --epsilon 1 \
     "${EXTRA_ARGS[@]}"
   local ec=$?
   set +x
@@ -72,11 +75,11 @@ run_one() {
   (( SLEEP_BETWEEN_JOBS > 0 )) && sleep "$SLEEP_BETWEEN_JOBS"
 }
 
-for t in "${PAIRS[@]}"; do
-  MODEL=""; NUM_TRAIN=""; CP_PATH=""
+for t in "${TRIALS[@]}"; do
+  MODEL=""; NUM_TRAIN=""; PRETRAIN_METHOD=""; GAMMA=""; SUP_TRAIN_TYPE=""
   # shellcheck disable=SC2086
-  read -r MODEL NUM_TRAIN CP_PATH <<< $t
-  run_one "$MODEL" "$NUM_TRAIN" "${CP_PATH:-}"
+  read -r MODEL NUM_TRAIN PRETRAIN_METHOD GAMMA SUP_TRAIN_TYPE <<< $t
+  run_one "$MODEL" "$NUM_TRAIN" "$PRETRAIN_METHOD" "$GAMMA" "$SUP_TRAIN_TYPE"
 done
 
 echo "Done."
