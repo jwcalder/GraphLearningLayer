@@ -199,3 +199,46 @@ def miniimagenet():
         'datadir': data_dir,
         'num_classes': 100
     }
+
+
+@export
+def emnist():
+    # Use MNIST-like stats; replicate to 3 channels because we convert grayscale -> RGB-like
+    channel_stats = dict(mean=[0.1307, 0.1307, 0.1307],
+                         std=[0.3081, 0.3081, 0.3081])
+
+    # Convert to 3-channel PIL first so RGB-oriented augmentations (e.g., Cutout) are safe
+    weak_transformation = transforms.Compose([
+        transforms.Grayscale(num_output_channels=3),   # 1->3 channels (PIL 'RGB'-like)
+        transforms.RandomRotation(10),
+        transforms.RandomCrop(28, padding=4),
+        RandAugment(1),
+        transforms.ToTensor(),
+        transforms.Normalize(**channel_stats)
+    ])
+
+    strong_transformation = transforms.Compose([
+        transforms.Grayscale(num_output_channels=3),   # keep pipeline RGB-compatible
+        transforms.RandomRotation(20),
+        transforms.RandomCrop(28, padding=4),
+        RandAugment(2),
+        transforms.ToTensor(),
+        transforms.Normalize(**channel_stats)
+    ])
+
+    eval_transformation = transforms.Compose([
+        transforms.Grayscale(num_output_channels=3),   # ensure eval is also 3-channel
+        transforms.ToTensor(),
+        transforms.Normalize(**channel_stats)
+    ])
+
+    # Point to EMNIST (balanced) directory; keep the structure consistent with MNIST
+    data_dir = 'data-local/images/emnist/balanced'
+
+    return {
+        'weak_transformation': weak_transformation,
+        'strong_transformation': strong_transformation,
+        'eval_transformation': eval_transformation,
+        'datadir': data_dir,
+        'num_classes': 47  # EMNIST Balanced has 47 classes
+    }

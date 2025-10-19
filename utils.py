@@ -750,7 +750,7 @@ def set_loader(opt, augment_type='weak', twoviews=False, return_full=False):
     from torchvision import datasets
 
     # ----- Dataset config -----
-    if opt.dataset in ('cifar10', 'cifar100', 'mnist', 'fashion_mnist'):
+    if opt.dataset in ('cifar10', 'cifar100', 'mnist', 'fashion_mnist', 'emnist'):
         dataset_config = datasets_setting.__dict__[opt.dataset]()
     else:
         raise ValueError('dataset not supported: {}'.format(opt.dataset))
@@ -784,6 +784,9 @@ def set_loader(opt, augment_type='weak', twoviews=False, return_full=False):
     elif opt.dataset == 'fashion_mnist':
         train_dataset = datasets.FashionMNIST(root=opt.data_folder, transform=None, train=True,  download=True)
         test_dataset  = datasets.FashionMNIST(root=opt.data_folder, transform=None, train=False, download=True)
+    elif opt.dataset == 'emnist':
+        train_dataset = datasets.EMNIST(root=opt.data_folder, split='balanced', transform=None, train=True,  download=True)
+        test_dataset  = datasets.EMNIST(root=opt.data_folder, split='balanced', transform=None, train=False, download=True)
     else:
         raise ValueError(opt.dataset)
 
@@ -981,12 +984,15 @@ def set_model(opt):
     import argparse
     torch.serialization.add_safe_globals([argparse.Namespace])
     
-    if opt.dataset == 'cifar10' or opt.dataset == 'cifar100':
-        dataset_config = datasets_setting.__dict__[opt.dataset]()
-    elif opt.dataset == 'mnist' or opt.dataset == 'fashion_mnist':
+    # Use a whitelist to keep error messages clean and avoid long chains
+    _supported = {'cifar10', 'cifar100', 'mnist', 'fashion_mnist', 'emnist'}
+
+    if opt.dataset in _supported:
+        # Call the function with the same name as the dataset in datasets_setting
         dataset_config = datasets_setting.__dict__[opt.dataset]()
     else:
         raise ValueError('dataset not supported: {}'.format(opt.dataset))
+
     num_classes = dataset_config.pop('num_classes')
 
     if opt.model == 'customCNN' and (opt.dataset == 'mnist' or opt.dataset == 'fashion_mnist'):

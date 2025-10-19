@@ -81,7 +81,7 @@ def parse_option():
     # model dataset
     parser.add_argument('--model', type=str, default='resnet18')
     parser.add_argument('--dataset', type=str, default='cifar10',
-                        choices=['cifar10', 'cifar100', 'mnist', 'fashion_mnist'], help='dataset')
+                        choices=['cifar10', 'cifar100', 'mnist', 'fashion_mnist', 'emnist'], help='dataset')
     parser.add_argument('--ds_stepsize', type=int, default=1, help='the step size to downsample the dataset')
     parser.add_argument('--data_folder', type=str, default=None, help='path to custom dataset')
     parser.add_argument('--size', type=int, default=32, help='parameter for RandomResizedCrop')
