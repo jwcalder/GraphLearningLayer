@@ -1001,13 +1001,18 @@ def set_model(opt):
         is_contrastive_pretrain = getattr(opt, "pretrain_method", "") in ["SimCLR", "SupCon", "combined"] \
                                     and getattr(opt, 'distributed', False)
 
+        in_channel = getattr(opt, "in_channel", None)
+        if in_channel is None:
+            in_channel = 1 if opt.dataset in {"mnist", "fashion_mnist", "emnist"} else 3
+
         model = buildnet(
             name=opt.model,
             head=opt.head_type,
             feat_dim=opt.embedding_dim,
             num_classes=num_classes,
             softmax=not opt.no_softmax,
-            include_classifier=not is_contrastive_pretrain,  # <-- disable classifier for SimCLR pretrain
+            include_classifier=not is_contrastive_pretrain,  # disable classifier for SimCLR-style pretrain
+            in_channel=in_channel,                           # <-- added: pass input channels to backbone
         )
 
     # model = SupConResNet(name=opt.model)

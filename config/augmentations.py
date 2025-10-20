@@ -232,3 +232,186 @@ class RandAugment:
             img = op(img, val)
         img = Cutout(img, random.uniform(0,1)*0.5)
         return img
+
+# --- Add these imports at top if not already present ---
+import random
+from PIL import Image, ImageOps, ImageEnhance, ImageDraw
+
+# --- Grayscale-friendly RandAugment (no RGB roundtrips) ---
+class GrayRandAugment:
+    """
+    RandAugment variant tailored for single-channel (grayscale) images.
+
+    Key ideas:
+    - Keep ops that are meaningful on grayscale and inexpensive.
+    - Avoid color-only ops (Color, Posterize with 3ch tuning, etc.).
+    - Cutout uses scalar fill compatible with 'L' mode.
+    - All ops work on PIL images in 'L' mode, and we never convert to RGB.
+
+    Parameters
+    ----------
+    n : int
+        Number of ops to apply sequentially.
+    m : int
+        Magnitude index in [0, 30]. Maps to op-specific ranges.
+    magnitude_std : float
+        If >0, sample magnitude from Normal(m, magnitude_std) and clip to [0, 30].
+    cutout_fill : int
+        Fill value for Cutout (0~255). 0 = black, 128 = gray, 255 = white.
+    """
+
+    def __init__(self, n=2, m=10, magnitude_std=0.0, cutout_fill=0):
+        self.n = n
+        self.m = m
+        self.magnitude_std = magnitude_std
+        self.cutout_fill = int(cutout_fill)
+        self._ops = [
+            self._shear_x, self._shear_y,
+            self._translate_x, self._translate_y,
+            self._rotate,
+            self._invert,
+            self._equalize,
+            self._solarize,
+            self._contrast,   # works on 'L' via ImageEnhance
+            self._sharpness,  # works on 'L'
+            self._brightness, # works on 'L'
+            self._cutout,
+        ]
+
+    # -------------------------
+    # Magnitude helpers
+    # -------------------------
+    @staticmethod
+    def _float_param(m, maxval):  # m in [0, 30]
+        return float(m) / 30.0 * maxval
+
+    @staticmethod
+    def _int_param(m, maxval):
+        return int(GrayRandAugment._float_param(m, maxval))
+
+    def _sample_m(self):
+        if self.magnitude_std > 0:
+            mag = random.gauss(self.m, self.magnitude_std)
+            mag = max(0, min(30, mag))
+            return mag
+        return self.m
+
+    # -------------------------
+    # Ops (grayscale safe)
+    # -------------------------
+    def _shear_x(self, img, m):
+        # Shear range [-0.3, 0.3]
+        v = self._float_param(m, 0.3)
+        if random.random() < 0.5:
+            v = -v
+        return img.transform(img.size, Image.AFFINE, (1, v, 0, 0, 1, 0), resample=Image.BILINEAR)
+
+    def _shear_y(self, img, m):
+        v = self._float_param(m, 0.3)
+        if random.random() < 0.5:
+            v = -v
+        return img.transform(img.size, Image.AFFINE, (1, 0, 0, v, 1, 0), resample=Image.BILINEAR)
+
+    def _translate_x(self, img, m):
+        # Translate in pixels up to ±(img.width * 0.45)
+        max_shift = int(img.size[0] * 0.45)
+        v = self._int_param(m, max_shift)
+        if random.random() < 0.5:
+            v = -v
+        # Use affine transform instead of ImageOps.offset for broad Pillow compatibility
+        return img.transform(img.size, Image.AFFINE, (1, 0, v, 0, 1, 0),
+                                resample=Image.BILINEAR, fillcolor=0)
+        # try:
+        #     return img.transform(img.size, Image.AFFINE, (1, 0, v, 0, 1, 0),
+        #                         resample=Image.BILINEAR, fillcolor=0)
+        # except TypeError:
+        #     # Fallback for very old Pillow without 'fillcolor' param
+        #     bg = Image.new(img.mode, img.size, color=0)
+        #     bg.paste(img, (v, 0))
+        #     return bg.crop((0, 0, img.size[0], img.size[1]))
+
+    def _translate_y(self, img, m):
+        max_shift = int(img.size[1] * 0.45)
+        v = self._int_param(m, max_shift)
+        if random.random() < 0.5:
+            v = -v
+        return img.transform(img.size, Image.AFFINE, (1, 0, 0, 0, 1, v),
+                                resample=Image.BILINEAR, fillcolor=0)
+        # try:
+        #     return img.transform(img.size, Image.AFFINE, (1, 0, 0, 0, 1, v),
+        #                         resample=Image.BILINEAR, fillcolor=0)
+        # except TypeError:
+        #     bg = Image.new(img.mode, img.size, color=0)
+        #     bg.paste(img, (0, v))
+        #     return bg.crop((0, 0, img.size[0], img.size[1]))
+
+    def _rotate(self, img, m):
+        # Angle in degrees up to ±30
+        v = self._float_param(m, 30.)
+        if random.random() < 0.5:
+            v = -v
+        # Use fill=0 to keep background black for EMNIST-like digits
+        return img.rotate(v, resample=Image.BILINEAR, fillcolor=0)
+
+    def _invert(self, img, m):
+        # Invert works on 'L'
+        return ImageOps.invert(img)
+
+    def _equalize(self, img, m):
+        return ImageOps.equalize(img)
+
+    def _solarize(self, img, m):
+        # Threshold in [0, 256)
+        v = self._int_param(m, 256)
+        return ImageOps.solarize(img, threshold=v)
+
+    def _contrast(self, img, m):
+        # Factor in [0.1, 1.9]
+        v = 0.1 + self._float_param(m, 1.8)
+        return ImageEnhance.Contrast(img).enhance(v)
+
+    def _sharpness(self, img, m):
+        v = 0.1 + self._float_param(m, 1.8)
+        return ImageEnhance.Sharpness(img).enhance(v)
+
+    def _brightness(self, img, m):
+        v = 0.1 + self._float_param(m, 1.8)
+        return ImageEnhance.Brightness(img).enhance(v)
+
+    def _cutout(self, img, m):
+        """
+        Cutout with a single gray value on 'L' images.
+        Box size scales with magnitude. The box is square.
+        """
+        # Box size up to 40% of the shortest side
+        max_len = int(min(img.size) * 0.4)
+        box_len = self._int_param(m, max_len)
+        if box_len < 1:
+            return img
+
+        w, h = img.size
+        x0 = random.randint(0, max(0, w - box_len))
+        y0 = random.randint(0, max(0, h - box_len))
+        x1, y1 = x0 + box_len, y0 + box_len
+
+        out = img.copy()
+        draw = ImageDraw.Draw(out)
+        draw.rectangle([x0, y0, x1, y1], fill=self.cutout_fill)
+        return out
+
+    # -------------------------
+    # Callable
+    # -------------------------
+    def __call__(self, img):
+        """
+        Apply 'n' randomly selected ops with (possibly jittered) magnitude.
+        Assumes 'img' is a PIL.Image in mode 'L'. If not, it will be converted.
+        """
+        if img.mode != "L":
+            img = img.convert("L")
+
+        ops = random.sample(self._ops, k=min(self.n, len(self._ops)))
+        for op in ops:
+            mag = self._sample_m()
+            img = op(img, mag)
+        return img

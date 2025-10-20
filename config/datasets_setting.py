@@ -1,5 +1,5 @@
 import torchvision.transforms as transforms
-from .augmentations import RandAugment
+from .augmentations import RandAugment, GrayRandAugment
 from .utils import export
 import os
 
@@ -201,38 +201,82 @@ def miniimagenet():
     }
 
 
+# @export
+# def emnist():
+#     # Use MNIST-like stats; replicate to 3 channels because we convert grayscale -> RGB-like
+#     channel_stats = dict(mean=[0.1307, 0.1307, 0.1307],
+#                          std=[0.3081, 0.3081, 0.3081])
+
+#     # Convert to 3-channel PIL first so RGB-oriented augmentations (e.g., Cutout) are safe
+#     weak_transformation = transforms.Compose([
+#         transforms.Grayscale(num_output_channels=3),   # 1->3 channels (PIL 'RGB'-like)
+#         transforms.RandomRotation(10),
+#         transforms.RandomCrop(28, padding=4),
+#         RandAugment(1),
+#         transforms.ToTensor(),
+#         transforms.Normalize(**channel_stats)
+#     ])
+
+#     strong_transformation = transforms.Compose([
+#         transforms.Grayscale(num_output_channels=3),   # keep pipeline RGB-compatible
+#         transforms.RandomRotation(20),
+#         transforms.RandomCrop(28, padding=4),
+#         RandAugment(2),
+#         transforms.ToTensor(),
+#         transforms.Normalize(**channel_stats)
+#     ])
+
+#     eval_transformation = transforms.Compose([
+#         transforms.Grayscale(num_output_channels=3),   # ensure eval is also 3-channel
+#         transforms.ToTensor(),
+#         transforms.Normalize(**channel_stats)
+#     ])
+
+#     # Point to EMNIST (balanced) directory; keep the structure consistent with MNIST
+#     data_dir = 'data-local/images/emnist/balanced'
+
+#     return {
+#         'weak_transformation': weak_transformation,
+#         'strong_transformation': strong_transformation,
+#         'eval_transformation': eval_transformation,
+#         'datadir': data_dir,
+#         'num_classes': 47  # EMNIST Balanced has 47 classes
+#     }
+
+
 @export
 def emnist():
-    # Use MNIST-like stats; replicate to 3 channels because we convert grayscale -> RGB-like
-    channel_stats = dict(mean=[0.1307, 0.1307, 0.1307],
-                         std=[0.3081, 0.3081, 0.3081])
+    # Grayscale statistics (EMNIST / MNIST-like)
+    channel_stats = dict(mean=[0.1307], std=[0.3081])
 
-    # Convert to 3-channel PIL first so RGB-oriented augmentations (e.g., Cutout) are safe
+    # NOTE:
+    # - Entire pipeline stays single-channel ('L' for PIL; [1, H, W] as tensor).
+    # - GrayRandAugment applies only grayscale-safe ops (no RGB conversions).
+    # - For small 28x28 digits, keep geometry magnitudes modest to avoid label leakage.
+
     weak_transformation = transforms.Compose([
-        transforms.Grayscale(num_output_channels=3),   # 1->3 channels (PIL 'RGB'-like)
-        transforms.RandomRotation(10),
-        transforms.RandomCrop(28, padding=4),
-        RandAugment(1),
+        transforms.Grayscale(num_output_channels=1),  # ensure single-channel
+        transforms.RandomCrop(28, padding=4),         # light spatial jitter
+        GrayRandAugment(n=1, m=10, magnitude_std=0.0, cutout_fill=0),
         transforms.ToTensor(),
-        transforms.Normalize(**channel_stats)
+        transforms.Normalize(**channel_stats),
     ])
 
     strong_transformation = transforms.Compose([
-        transforms.Grayscale(num_output_channels=3),   # keep pipeline RGB-compatible
-        transforms.RandomRotation(20),
+        transforms.Grayscale(num_output_channels=1),
         transforms.RandomCrop(28, padding=4),
-        RandAugment(2),
+        transforms.RandomRotation(15),               # extra geometry on top
+        GrayRandAugment(n=2, m=14, magnitude_std=3.0, cutout_fill=0),
         transforms.ToTensor(),
-        transforms.Normalize(**channel_stats)
+        transforms.Normalize(**channel_stats),
     ])
 
     eval_transformation = transforms.Compose([
-        transforms.Grayscale(num_output_channels=3),   # ensure eval is also 3-channel
+        transforms.Grayscale(num_output_channels=1),
         transforms.ToTensor(),
-        transforms.Normalize(**channel_stats)
+        transforms.Normalize(**channel_stats),
     ])
 
-    # Point to EMNIST (balanced) directory; keep the structure consistent with MNIST
     data_dir = 'data-local/images/emnist/balanced'
 
     return {
@@ -240,5 +284,5 @@ def emnist():
         'strong_transformation': strong_transformation,
         'eval_transformation': eval_transformation,
         'datadir': data_dir,
-        'num_classes': 47  # EMNIST Balanced has 47 classes
+        'num_classes': 47  # EMNIST Balanced
     }
