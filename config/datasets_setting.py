@@ -119,7 +119,7 @@ def cifar10():
 @export
 def cifar100():
     channel_stats = dict(mean=[0.5071, 0.4867, 0.4408],
-                         std=[0.2675,  0.2565,  0.2761]) # should we use different stats - do this
+                         std=[0.2675,  0.2565,  0.2761]) 
     
     weak_transformation = transforms.Compose([        
         transforms.RandomHorizontalFlip(),

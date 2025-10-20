@@ -165,6 +165,9 @@ def parse_option():
     parser.add_argument('--class_rand_sample', action='store_true',
                         help='sample data randomly among classes for base dataset')
     parser.add_argument('--print_all_parameters', action='store_true', help='print all parameters')
+    parser.add_argument('--top', type=int, default=1,
+                        help='Top-k for accuracy calculation (use 1 for Top-1)')
+
 
     opt = parser.parse_args()
 

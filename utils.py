@@ -1136,7 +1136,7 @@ def test_network(model, base_loader, test_loader, opt, predictor='GL'):
 
 
 def test_GL_NP(model, train_loader_ss, test_loader, opt, unlabel_train_loader=None):
-    '''
+    """
     Transform to numpy and do standard Laplace learning test
 
     Added:
@@ -1144,7 +1144,8 @@ def test_GL_NP(model, train_loader_ss, test_loader, opt, unlabel_train_loader=No
           * test data
           * labeled training data
           * unlabeled training data (0 if not provided)
-    '''
+      - Support Top-k accuracy via `opt.top` (defaults to Top-1 if missing)
+    """
     import numpy as np
 
     model.eval()
@@ -1154,8 +1155,8 @@ def test_GL_NP(model, train_loader_ss, test_loader, opt, unlabel_train_loader=No
     train_data, train_label = loader_to_numpy(train_loader_ss, opt, model)
 
     # Track counts
-    test_count     = len(test_data)
-    labeled_count  = len(train_data)
+    test_count      = len(test_data)
+    labeled_count   = len(train_data)
     unlabeled_count = 0
 
     # Optional unlabeled data
@@ -1171,15 +1172,39 @@ def test_GL_NP(model, train_loader_ss, test_loader, opt, unlabel_train_loader=No
         all_data,
         train_label,
         knn_num=50,
-        epsilon=opt.epsilon,
+        epsilon=getattr(opt, 'epsilon', 0.0),
         n_classes='auto',
-        tau=opt.tau
+        tau=getattr(opt, 'tau', 1.0)
     )
 
-    pred = np.argmax(U, axis=1)
-    correct_num = np.sum(pred[-test_count:] == test_label)
+    # Determine Top-k setting; default to Top-1 if opt.top is missing
+    k = int(getattr(opt, 'top', 1))
+    num_classes = U.shape[1]
+    # Clamp k to a valid range [1, num_classes]
+    k = max(1, min(k, num_classes))
+
+    # Slice out test logits (the last `test_count` rows correspond to test samples)
+    U_test = U[-test_count:]
+
+    # Compute Top-k predictions and accuracy
+    if k == 1:
+        # Standard Top-1
+        pred = np.argmax(U_test, axis=1)
+        correct_num = int(np.sum(pred == test_label))
+    else:
+        # Top-k: check if ground-truth is among the top-k scores for each sample
+        # Use argpartition for efficiency (unsorted top-k indices), then membership test
+        kth = U_test.shape[1] - k  # index to partition at (keeps k largest in the tail)
+        topk_idx = np.argpartition(U_test, kth=kth, axis=1)[:, -k:]  # shape (N_test, k)
+        # Row-wise membership: label i is correct if test_label[i] in topk_idx[i]
+        correct_flags = [test_label[i] in topk_idx[i] for i in range(test_count)]
+        correct_num = int(np.sum(correct_flags))
+
     total_test_num = test_count
-    acc = 100. * correct_num / total_test_num
+    acc = 100.0 * correct_num / total_test_num
+
+    # Pretty name for Top-k
+    top_name = f"Top-{k}"
 
     # Print detailed counts and accuracy
     print(
@@ -1187,10 +1212,11 @@ def test_GL_NP(model, train_loader_ss, test_loader, opt, unlabel_train_loader=No
         f'  Test samples       : {test_count}\n'
         f'  Labeled train      : {labeled_count}\n'
         f'  Unlabeled train    : {unlabeled_count}\n'
-        f'  Accuracy           : {correct_num}/{total_test_num} ({acc:.2f}%)\n'
+        f'  {top_name} Accuracy : {correct_num}/{total_test_num} ({acc:.2f}%)\n'
     )
 
     return acc
+
 
 
 #### for pseudo label training
