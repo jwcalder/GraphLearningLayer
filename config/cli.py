@@ -206,8 +206,8 @@ def parse_option():
     for it in iterations:
         opt.lr_decay_epochs.append(int(it))
 
-    opt.model_name = '{}_bsz_{}_{}_ssaug_{}_gamma_{}'. \
-        format(opt.model, opt.batch_size, opt.num_train, opt.augment_type, opt.gamma)
+    opt.model_name = '{}_{}_bsz_{}_{}_ssaug_{}_gamma_{}'. \
+        format(opt.dataset, opt.model, opt.batch_size, opt.num_train, opt.augment_type, opt.gamma)
 
     if opt.cosine:
         opt.model_name = '{}_cosine'.format(opt.model_name)
