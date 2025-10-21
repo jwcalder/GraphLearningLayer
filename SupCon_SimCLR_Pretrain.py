@@ -75,6 +75,114 @@ def _normalize_batch(batch):
 
     return images, labels
 
+def train_shared_loader(
+    loader,
+    model,
+    criterion_supcon,
+    criterion_simclr,
+    optimizer,
+    epoch,
+    opt,
+    gamma: float,
+):
+    """
+    Train one epoch when SupCon and SimCLR share the SAME loader.
+    We do a single forward per step and reuse the features for both losses.
+    Final loss per step: gamma * supcon + (1 - gamma) * simclr (single backward/step).
+    """
+    model.train()
+
+    batch_time = AverageMeter()
+    data_time = AverageMeter()
+    loss_total_meter = AverageMeter()
+    loss_supcon_meter = AverageMeter()
+    loss_simclr_meter = AverageMeter()
+
+    master = is_master_process()
+    end = time.time()
+
+    steps = len(loader)
+    it_loader = iter(loader)
+
+    for step in range(steps):
+        # -------------------------
+        # Fetch a batch (images, labels)
+        # -------------------------
+        try:
+            batch = next(it_loader)
+        except StopIteration:
+            it_loader = iter(loader)
+            batch = next(it_loader)
+
+        data_time.update(time.time() - end)
+
+        # Normalize batch into (two views, labels)
+        images, labels = _normalize_batch(batch)
+        imgs = torch.cat([images[0], images[1]], dim=0)
+
+        if torch.cuda.is_available():
+            imgs = imgs.cuda(non_blocking=True)
+            labels = labels.cuda(non_blocking=True)
+
+        # Warm-up learning rate once per global step
+        warmup_learning_rate(opt, epoch, step, steps, optimizer)
+
+        # -------------------------
+        # Single forward
+        # -------------------------
+        _, feats = model(imgs)
+        bsz = labels.shape[0]
+
+        f1, f2 = torch.split(feats, [bsz, bsz], dim=0)
+        feats_pair = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)  # [B, 2, C]
+
+        # All-gather for DDP; keep autograd for gradients
+        feats_pair = concat_all_gather(feats_pair, requires_grad=True)
+        labels_all = concat_all_gather(labels)
+
+        # -------------------------
+        # Compute both losses on the SAME features
+        # -------------------------
+        loss_supcon = criterion_supcon(feats_pair, labels_all)  # uses labels
+        loss_simclr = criterion_simclr(feats_pair)              # label-free SimCLR
+
+        # Blend and optimize
+        loss = gamma * loss_supcon + (1.0 - gamma) * loss_simclr
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        # Meters
+        loss_total_meter.update(loss.item(), bsz)
+        loss_supcon_meter.update(loss_supcon.item(), bsz)
+        loss_simclr_meter.update(loss_simclr.item(), bsz)
+
+        # Time
+        batch_time.update(time.time() - end)
+        end = time.time()
+
+        # Logging (master only)
+        if master and ((step + 1) % getattr(opt, "print_freq_ss", 10) == 0):
+            print(
+                'Train (SharedLoader): [{0}][{1}/{2}]\t'
+                'BT {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                'DT {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                'loss {loss.val:.3f} ({loss.avg:.3f})\t'
+                'supcon {lsc.val:.3f} ({lsc.avg:.3f})\t'
+                'simclr {lsm.val:.3f} ({lsm.avg:.3f})\t'.format(
+                    epoch, step + 1, steps,
+                    batch_time=batch_time,
+                    data_time=data_time,
+                    loss=loss_total_meter,
+                    lsc=loss_supcon_meter,
+                    lsm=loss_simclr_meter
+                )
+            )
+            sys.stdout.flush()
+
+    return loss_total_meter.avg
+
 
 def train_two_loaders(
     labeled_loader,
@@ -280,7 +388,6 @@ def main_worker(local_rank, opt):
         print_model_param_stats(model, encoder_attr_name="encoder")
         print(f"[Config] gamma={gamma:.3f}, tau_supcon={tau_supcon:.3f}, tau_simclr={tau_simclr:.3f}")
 
-    # Training loop
     for epoch in range(1, opt.epochs + 1):
         # For DDP samplers (e.g., DistributedSampler), set epoch for shuffling
         if getattr(opt, 'distributed', False):
@@ -289,18 +396,34 @@ def main_worker(local_rank, opt):
             if hasattr(full_train_loader.sampler, 'set_epoch'):
                 full_train_loader.sampler.set_epoch(epoch)
 
-        # Train one epoch using two loaders
-        loss = train_two_loaders(
-            labeled_loader=label_train_loader_score,
-            unlabeled_loader=full_train_loader,
-            model=model,
-            criterion_supcon=criterion_supcon,
-            criterion_simclr=criterion_simclr,
-            optimizer=optimizer,
-            epoch=epoch,
-            opt=opt,
-            gamma=gamma
-        )
+        # ------------------------------------------------------------------
+        # If opt.train_num is None, SupCon and SimCLR share the SAME loader:
+        # do ONE forward pass and compute both losses from the same features.
+        # Otherwise, keep using two distinct loaders.
+        # ------------------------------------------------------------------
+        if getattr(opt, 'train_num', None) is None:
+            loss = train_shared_loader(
+                loader=label_train_loader_score,
+                model=model,
+                criterion_supcon=criterion_supcon,
+                criterion_simclr=criterion_simclr,
+                optimizer=optimizer,
+                epoch=epoch,
+                opt=opt,
+                gamma=gamma
+            )
+        else:
+            loss = train_two_loaders(
+                labeled_loader=label_train_loader_score,
+                unlabeled_loader=full_train_loader,
+                model=model,
+                criterion_supcon=criterion_supcon,
+                criterion_simclr=criterion_simclr,
+                optimizer=optimizer,
+                epoch=epoch,
+                opt=opt,
+                gamma=gamma
+            )
 
         if master:
             print(f'[SupCon (labeled) + SimCLR (unlabeled)] Epoch {epoch}, '
