@@ -247,7 +247,7 @@ def main_worker(local_rank, opt):
     print_loader_info("eval_labeled_train_loader", eval_labeled_train_loader)
     print_loader_info("eval_unlabeled_train_loader", eval_unlabeled_train_loader)
     print_loader_info("test_loader_eval", test_loader_eval)
-    test_acc_record = []
+    # test_acc_record = []
     
     # Ensure we have both loaders
     if full_train_loader is None:
@@ -258,8 +258,8 @@ def main_worker(local_rank, opt):
     optimizer = set_optimizer(opt, model)
     
     # test model before training
-    test_acc = test_GL_NP(model, eval_labeled_train_loader, test_loader_eval, opt, unlabel_train_loader=eval_unlabeled_train_loader)
-    test_acc_record.append(test_acc)
+    # test_acc = test_GL_NP(model, eval_labeled_train_loader, test_loader_eval, opt, unlabel_train_loader=eval_unlabeled_train_loader)
+    # test_acc_record.append(test_acc)
 
     # Temperatures from options (with defaults)
     tau_supcon: float = getattr(opt, 'tau_supcon', 0.07)
@@ -317,8 +317,8 @@ def main_worker(local_rank, opt):
                 save_model(mdl, optimizer, opt, epoch, ckpt_path)
                 
                 # test model at this checkpoint
-                test_acc = test_GL_NP(model, eval_labeled_train_loader, test_loader_eval, opt, unlabel_train_loader=eval_unlabeled_train_loader)
-                test_acc_record.append(test_acc)
+                # test_acc = test_GL_NP(model, eval_labeled_train_loader, test_loader_eval, opt, unlabel_train_loader=eval_unlabeled_train_loader)
+                # test_acc_record.append(test_acc)
 
         # Optional: prevent workers from racing too far ahead of rank 0
         if getattr(opt, 'distributed', False):
