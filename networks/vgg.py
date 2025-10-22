@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 
 # ------------------------------
-# VGG backbone for CIFAR inputs
+# VGG backbone for CIFAR/MNIST inputs
 # ------------------------------
 
 cfgs = {
@@ -49,12 +49,19 @@ class VGG(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def _make_layers(self, cfg, in_channel, use_bn=True):
-        """Build VGG feature extractor with optional BatchNorm."""
+        """Build VGG feature extractor with optional BatchNorm.
+        
+        Note:
+            We set ceil_mode=True for MaxPool2d so that downsampling on 28x28 inputs
+            remains valid across 5 pooling stages (28->14->7->4->2->1). This keeps
+            CIFAR-10 (32x32) behavior unchanged (32->16->8->4->2->1).
+        """
         layers = []
         in_c = in_channel
         for v in cfg:
             if v == 'M':
-                layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
+                # Use ceil_mode=True to avoid invalid 2x2 pooling on a 1x1 map for 28x28 inputs
+                layers.append(nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=True))
             else:
                 conv = nn.Conv2d(in_c, v, kernel_size=3, stride=1, padding=1, bias=False)
                 if use_bn:
