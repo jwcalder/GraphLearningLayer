@@ -23,6 +23,14 @@ from GLL import LaplaceLearningSparseHard
 from visualize import visualize
 from config.cli import parse_option
 
+_DATASET_NUM_CLASSES = {
+    "cifar10": 10,
+    "cifar100": 100,
+    "mnist": 10,
+    "fashion_mnist": 10,
+    # Assuming EMNIST 'balanced' split (47 classes). Change if you use a different split.
+    "emnist": 47,
+}
 
 ## --cp_load_path ./simclr_ckpt_epoch_1000.pth
 def train(train_loader, base_loader, unlabel_train_loader,
@@ -66,7 +74,7 @@ def train(train_loader, base_loader, unlabel_train_loader,
     # Precompute label matrix once per epoch (used in 'gl' mode)
     if opt.sup_train_type == 'gl':
         # NOTE: use opt.num_classes if available; falls back to 10 otherwise
-        num_classes = getattr(opt, "num_classes", 10)
+        num_classes = _DATASET_NUM_CLASSES.get(opt.dataset, None)
         label_matrix_epoch = F.one_hot(base_labels, num_classes=num_classes).float()
 
     # ---- Build manual iterators for loaders to avoid cycle() caching all batches in memory ----

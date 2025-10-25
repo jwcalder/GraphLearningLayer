@@ -13,16 +13,16 @@
 
 set -euo pipefail
 
-# -------- Required CLI arg: DATASET --------
-if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <DATASET> [EPOCH]"
-  exit 1
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  echo "Usage: $0 [DATASET] [EPOCH]"
+  echo "Defaults: DATASET=emnist, EPOCH=500"
+  exit 0
 fi
-DATASET="$1"
-# Optional EPOCH with default 1000
+
+DATASET="${1:-emnist}"
 EPOCH="${2:-500}"
 
-# Validate EPOCH is a positive integer
+# Validate EPOCH is a non-negative integer
 if ! [[ "$EPOCH" =~ ^[0-9]+$ ]]; then
   echo "Error: EPOCH must be an integer (got '$EPOCH')."
   exit 1
@@ -99,11 +99,13 @@ run_one() {
   python3 FullySup.py \
     --model "${MODEL}" \
     --dataset "${DATASET}" \
-    --plot_freq_ss 50 \
+    --plot_freq_ss 5 \
     --cosine \
     --sup_train_type "${SUP_TRAIN_TYPE}" \
     --cp_load_path "${CP_PATH}" \
-    --epsilon 1 \
+    --epsilon auto \
+    --learning_rate 5e-5 \
+    --num_base_data 470 \
     "${EXTRA_ARGS[@]}" 
   local ec=$?
   set +x
