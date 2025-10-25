@@ -458,10 +458,10 @@ def main_worker(local_rank, opt):
         dist.destroy_process_group()
         
     # save test acc record
-    if master:
-        acc_record_path = os.path.join(opt.save_folder, 'test_acc_record.npy')
-        np.save(acc_record_path, np.array(test_acc_record))
-        print(f"Test accuracy record saved to {acc_record_path}")
+    # if master:
+    #     acc_record_path = os.path.join(opt.save_folder, 'test_acc_record.npy')
+    #     np.save(acc_record_path, np.array(test_acc_record))
+    #     print(f"Test accuracy record saved to {acc_record_path}")
 
 
 def main(opt):
