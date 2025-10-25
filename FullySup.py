@@ -20,7 +20,7 @@ from utils import set_loader, set_model, print_loader_info, print_dataset_info
 from losses import *
 
 from GLL import LaplaceLearningSparseHard
-from visualize import visualize
+# from visualize import visualize
 from config.cli import parse_option
 
 _DATASET_NUM_CLASSES = {
