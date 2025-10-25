@@ -232,7 +232,7 @@ def main(opt):
     if opt.sup_train_type == 'gl':
         test_acc = test_GL_NP(model, eval_labeled_train_loader, test_loader_eval, opt, unlabel_train_loader=eval_unlabeled_train_loader)
     elif opt.sup_train_type == 'mlp':
-        _ = test_GL_NP(model, eval_labeled_train_loader, test_loader_eval, opt, unlabel_train_loader=eval_unlabeled_train_loader)
+        # _ = test_GL_NP(model, eval_labeled_train_loader, test_loader_eval, opt, unlabel_train_loader=eval_unlabeled_train_loader)
         test_acc = test_network(model, eval_labeled_train_loader, test_loader_eval, opt, predictor='MLP')
     else:
         raise ValueError(opt.sup_train_type)
@@ -295,7 +295,7 @@ def main(opt):
             if opt.sup_train_type == 'gl':
                 test_acc = test_GL_NP(model, eval_labeled_train_loader, test_loader_eval, opt, unlabel_train_loader=eval_unlabeled_train_loader)
             elif opt.sup_train_type == 'mlp':
-                _ = test_GL_NP(model, eval_labeled_train_loader, test_loader_eval, opt, unlabel_train_loader=eval_unlabeled_train_loader)
+                # _ = test_GL_NP(model, eval_labeled_train_loader, test_loader_eval, opt, unlabel_train_loader=eval_unlabeled_train_loader)
                 test_acc = test_network(model, eval_labeled_train_loader, test_loader_eval, opt, predictor='MLP')
             else:
                 raise ValueError(opt.sup_train_type)
