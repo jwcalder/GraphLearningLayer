@@ -220,6 +220,14 @@ def main(opt):
     # Build model and optimizer
     model = set_model(opt)
     optimizer = set_optimizer(opt, model)
+    
+    m = model.module if hasattr(model, "module") else model
+    # Total parameters (all, including non-trainable)
+    total_params = sum(p.numel() for p in m.parameters())
+    # Trainable parameters only
+    trainable_params = sum(p.numel() for p in m.parameters() if p.requires_grad)
+    print(f"Total params: {total_params} ({total_params/1e6:.3f}M)")
+    print(f"Trainable params: {trainable_params} ({trainable_params/1e6:.3f}M)")
 
     # Records
     train_loss_record = []
