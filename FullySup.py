@@ -35,12 +35,12 @@ _DATASET_NUM_CLASSES = {
 ## --cp_load_path ./simclr_ckpt_epoch_1000.pth
 def train(train_loader, base_loader, unlabel_train_loader,
           train_dataset, model, optimizer, epoch, opt):
-    """One epoch training (memory-safe).
+    """One epoch training with optional unlabeled data disabled for MLP.
 
-    Key fixes for memory stability:
-    1) Avoid itertools.cycle cache by manually restarting iterators on exhaustion.
-    2) Do NOT create a new iterator for base_loader every step. Preload the base batch once per epoch.
-    3) Keep DataLoader workers stable by not spawning/tearing down repeatedly.
+    Behavior:
+    - If opt.sup_train_type == 'mlp': use ONLY labeled train_loader; ignore unlabel_train_loader entirely.
+    - Otherwise (e.g., 'gl'): keep previous behavior of mixing labeled + unlabeled batches.
+    - Preload base_loader only for 'gl' mode to avoid unnecessary memory usage.
     """
 
     # Enable grads
@@ -61,60 +61,59 @@ def train(train_loader, base_loader, unlabel_train_loader,
     correct_num = 0
     data_count = 0
 
-    # ---- Preload the base batch ONCE per epoch (base_loader has a single big batch) ----
-    # This prevents building a fresh iterator (and new workers) on every training step.
-    base_iter = iter(base_loader)
-    base_images, base_labels = next(base_iter)
+    # ---- Use unlabeled data only when NOT training with MLP ----
+    use_unlabeled = (opt.sup_train_type != 'mlp') and (unlabel_train_loader is not None)
 
-    # Move base tensors to device once per epoch
-    if torch.cuda.is_available() and (opt.dev != 'cpu'):
-        base_images = base_images.cuda(non_blocking=True)
-        base_labels = base_labels.cuda(non_blocking=True)
-
-    # Precompute label matrix once per epoch (used in 'gl' mode)
+    # ---- Preload the base batch ONLY for 'gl' mode ----
     if opt.sup_train_type == 'gl':
-        # NOTE: use opt.num_classes if available; falls back to 10 otherwise
+        base_iter = iter(base_loader)
+        base_images, base_labels = next(base_iter)
+
+        # Move base tensors to device once per epoch
+        if torch.cuda.is_available() and (opt.dev != 'cpu'):
+            base_images = base_images.cuda(non_blocking=True)
+            base_labels = base_labels.cuda(non_blocking=True)
+
+        # Precompute label matrix once per epoch (used in 'gl' mode)
         num_classes = _DATASET_NUM_CLASSES.get(opt.dataset, None)
         label_matrix_epoch = F.one_hot(base_labels, num_classes=num_classes).float()
-
-    # ---- Build manual iterators for loaders to avoid cycle() caching all batches in memory ----
-    if unlabel_train_loader is None:
-        target_steps = len(train_loader)
-        l_iter = iter(train_loader)
-        u_iter = None
     else:
-        # Run for the longer length while restarting the shorter iterator when it exhausts.
+        base_images, base_labels, label_matrix_epoch = None, None, None
+
+    # ---- Build manual iterators (avoid cycle()) ----
+    if use_unlabeled:
         target_steps = max(len(train_loader), len(unlabel_train_loader))
         l_iter = iter(train_loader)
         u_iter = iter(unlabel_train_loader)
+    else:
+        target_steps = len(train_loader)
+        l_iter = iter(train_loader)
+        u_iter = None  # explicitly unused in MLP mode
 
     for idx in range(target_steps):
         # Measure data time start
         data_start = time.time()
 
         # Fetch labeled batch (restart iterator if exhausted)
-        if unlabel_train_loader is None:
-            batch_l = next(l_iter, None)
-            if batch_l is None:
-                l_iter = iter(train_loader)
-                batch_l = next(l_iter)
-            indices, images, labels = batch_l
-        else:
-            batch_l = next(l_iter, None)
-            if batch_l is None:
-                l_iter = iter(train_loader)
-                batch_l = next(l_iter)
-            indices, images_l, labels = batch_l
+        batch_l = next(l_iter, None)
+        if batch_l is None:
+            l_iter = iter(train_loader)
+            batch_l = next(l_iter)
 
-            # Fetch unlabeled batch (restart iterator if exhausted)
+        # Unpack labeled batch
+        indices, images_l, labels = batch_l
+
+        # Optionally fetch unlabeled batch (NOT in MLP mode)
+        if use_unlabeled:
             batch_u = next(u_iter, None)
             if batch_u is None:
                 u_iter = iter(unlabel_train_loader)
                 batch_u = next(u_iter)
             images_u, _ = batch_u
-
-            # Concatenate labeled + unlabeled for forward; loss computed only on labeled
             images = torch.cat([images_l, images_u], dim=0)
+        else:
+            # In MLP mode, only use labeled images
+            images = images_l
 
         # Move current batch to device
         if torch.cuda.is_available() and (opt.dev != 'cpu'):
@@ -128,7 +127,6 @@ def train(train_loader, base_loader, unlabel_train_loader,
 
         # Warm-up LR (per step) if enabled
         if opt.warm:
-            # For steps_per_epoch use len(train_loader) to keep schedule stable
             warmup_learning_rate(opt, epoch, idx, len(train_loader), optimizer)
 
         # Step-wise LR adjust (if your schedule intends epoch-level, consider moving outside loop)
@@ -144,6 +142,7 @@ def train(train_loader, base_loader, unlabel_train_loader,
             pred = pred[:len(labels)]  # keep only labeled part for loss
             loss = criterion(pred, labels)
         else:
+            # MLP (and any other non-GL modes): no unlabeled concatenation, just labeled forward
             pred, _ = model(images)
             pred = pred[:len(labels)]
             loss = criterion(pred, labels)
@@ -153,7 +152,7 @@ def train(train_loader, base_loader, unlabel_train_loader,
         correct_num += torch.sum(torch.eq(pred_labels, labels)).item()
         data_count += len(pred)
 
-        # Optionally update sample scores (for 'score' mode)
+        # Optionally update sample scores (for 'gl' mode)
         if (opt.sup_train_type == 'gl'
             and epoch % opt.gl_update_base_epochs == 0
             and opt.gl_update_base_mode == 'score'):
@@ -195,6 +194,7 @@ def train(train_loader, base_loader, unlabel_train_loader,
             sys.stdout.flush()
 
     return losses.avg, correct_num / max(data_count, 1)
+
 
 
 def main(opt):

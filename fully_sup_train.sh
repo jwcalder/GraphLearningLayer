@@ -34,9 +34,9 @@ fi
 # Format: "MODEL NUM_TRAIN PRETRAIN_METHOD GAMMA SUP_TRAIN_TYPE"
 # cifar10 example
 TRIALS=(
-  "resnet20 None combined 0.99 mlp"
-  "resnet20 10000 combined 0.99 mlp"
-  "resnet20 1000 combined 0.99 mlp"
+    # "preactresnet18 None combined 0.99 mlp"
+    "preactresnet18 10000 combined 0.99 mlp"
+    # "preactresnet18 1000 combined 0.99 mlp"
 )
 # EMNIST balanced example
 # TRIALS=(
@@ -100,7 +100,7 @@ run_one() {
   python3 FullySup.py \
     --model "${MODEL}" \
     --dataset "${DATASET}" \
-    --plot_freq_ss 50 \
+    --plot_freq_ss 5 \
     --cosine \
     --sup_train_type "${SUP_TRAIN_TYPE}" \
     --cp_load_path "${CP_PATH}" \
