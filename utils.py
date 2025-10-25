@@ -1103,17 +1103,18 @@ def test_network(model, base_loader, test_loader, opt, predictor='GL'):
 
     model.eval()
 
-    base_images, base_labels = next(iter(base_loader))
+    if predictor == "GL":
+        base_images, base_labels = next(iter(base_loader))
     data_count = 0
     correct_num = 0
     for idx, (images, labels) in enumerate(test_loader):
         if torch.cuda.is_available() & (opt.dev != 'cpu'):
             images = images.cuda(non_blocking=True)
             labels = labels.cuda(non_blocking=True)
-            base_images = base_images.cuda(non_blocking=True)
-            base_labels = base_labels.cuda(non_blocking=True)
 
         if predictor == "GL":
+            base_images = base_images.cuda(non_blocking=True)
+            base_labels = base_labels.cuda(non_blocking=True)
             label_matrix = nn.functional.one_hot(base_labels, num_classes=10).float()
 
             images = torch.cat((base_images, images), dim=0)  # Put the base images on top of unlabel images

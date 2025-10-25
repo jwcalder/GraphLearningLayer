@@ -37,7 +37,7 @@ TRIALS=(
     # "preactresnet18 None combined 0.99 mlp"
     # "preactresnet18 10000 combined 0.99 mlp"
     # "preactresnet18 1000 combined 0.99 mlp"
-    "resnet18 10000 combined 0.99 mlp"
+    "resnet110 10000 combined 0.99 mlp"
 )
 # EMNIST balanced example
 # TRIALS=(
