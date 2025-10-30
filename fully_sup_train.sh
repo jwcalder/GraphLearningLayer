@@ -106,6 +106,7 @@ run_one() {
     --sup_train_type "${SUP_TRAIN_TYPE}" \
     --cp_load_path "${CP_PATH}" \
     --epsilon 1 \
+    --test_batch_size 500 \
     "${EXTRA_ARGS[@]}" 
   local ec=$?
   set +x
