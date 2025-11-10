@@ -13,14 +13,13 @@
 
 set -euo pipefail
 
-# -------- Required CLI arg: DATASET --------
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   echo "Usage: $0 [DATASET] [EPOCH]"
   echo "Defaults: DATASET=emnist, EPOCH=500"
   exit 0
 fi
 
-DATASET="${1:-cifar10}"
+DATASET="${1:-emnist}"
 EPOCH="${2:-500}"
 
 # Validate EPOCH is a non-negative integer
@@ -30,21 +29,30 @@ if ! [[ "$EPOCH" =~ ^[0-9]+$ ]]; then
 fi
 # ------------------------------------------
 
+# -------- Directory placement rule --------
+# Rule: If the directory where this script resides contains a 'save' folder, do not change directory.
+#       Otherwise, go up one level (cd ..).
+SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+cd "$SCRIPT_DIR"
+
+if [[ ! -d "save" ]]; then
+  cd ..
+fi
+
 # -------- Edit here --------
 # Format: "MODEL NUM_TRAIN PRETRAIN_METHOD GAMMA SUP_TRAIN_TYPE"
 # cifar10 example
-TRIALS=(
-    # "preactresnet18 None combined 0.99 mlp"
-    # "preactresnet18 10000 combined 0.99 mlp"
-    # "preactresnet18 1000 combined 0.99 mlp"
-    "resnet110 10000 combined 0.99 mlp"
-)
-# EMNIST balanced example
 # TRIALS=(
 #   "preactresnet18 None combined 0.99 gl"
-#   "preactresnet18 22560 combined 0.99 gl"
-#   "preactresnet18 2256 combined 0.99 gl"
+#   "preactresnet18 10000 combined 0.99 gl"
+#   "preactresnet18 1000 combined 0.99 gl"
 # )
+# EMNIST balanced example
+TRIALS=(
+  "preactresnet18 None combined 0.99 gl"
+  "preactresnet18 22560 combined 0.99 gl"
+  "preactresnet18 2256 combined 0.99 gl"
+)
 SLEEP_BETWEEN_JOBS=0
 CONDENV=gll_compat
 # ---------------------------
@@ -105,8 +113,9 @@ run_one() {
     --cosine \
     --sup_train_type "${SUP_TRAIN_TYPE}" \
     --cp_load_path "${CP_PATH}" \
-    --epsilon 1 \
-    --test_batch_size 500 \
+    --epsilon auto \
+    --learning_rate 5e-5 \
+    --num_base_data 470 \
     "${EXTRA_ARGS[@]}" 
   local ec=$?
   set +x

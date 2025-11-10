@@ -1094,58 +1094,137 @@ def laplace(X, train_labels, knn_num=50, epsilon='auto', n_classes='auto', tau=1
     return Pred
 ######
 
-def test_network(model, base_loader, test_loader, opt, predictor='GL'):
-    '''
-    Directly use the network with Laplace learning layer to do the test
-    '''
+def test_network(model, base_loader, test_loader, opt, predictor='GL', return_per_class=False):
+    """
+    Directly use the network with Laplace learning layer to do the test.
+
+    Additions:
+      - Top-k accuracy controlled by `opt.top` (default Top-1).
+      - Optional per-class accuracy via `return_per_class` (default: False).
+        When True, returns (overall_acc, per_class_acc) where per_class_acc is
+        a NumPy array of shape (num_classes,) in percentages; classes absent in
+        the test set are reported as np.nan.
+    """
+    import numpy as np
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
 
     lap = LaplaceLearningSparseHard.apply
-
     model.eval()
 
+    # Prepare base batch if using GL predictor
     if predictor == "GL":
         base_images, base_labels = next(iter(base_loader))
-    data_count = 0
-    correct_num = 0
+        if torch.cuda.is_available() and (opt.dev != 'cpu'):
+            base_images = base_images.cuda(non_blocking=True)
+            base_labels = base_labels.cuda(non_blocking=True)
+
+        # Infer number of classes for one-hot (prefer opt.num_classes if provided)
+        if hasattr(opt, "num_classes") and opt.num_classes is not None:
+            num_classes_gl = int(opt.num_classes)
+        else:
+            num_classes_gl = int(base_labels.max().item()) + 1
+        label_matrix = F.one_hot(base_labels, num_classes=num_classes_gl).float()
+    elif predictor != "MLP":
+        raise ValueError(predictor)
+
+    # Top-k setting
+    k = int(getattr(opt, 'top', 1))
+    total_count = 0
+    correct_count = 0
+
+    # Will be initialized after first forward when num_classes is known
+    per_class_correct = None
+    per_class_total = None
+
     for idx, (images, labels) in enumerate(test_loader):
-        if torch.cuda.is_available() & (opt.dev != 'cpu'):
+        if torch.cuda.is_available() and (opt.dev != 'cpu'):
             images = images.cuda(non_blocking=True)
             labels = labels.cuda(non_blocking=True)
 
         if predictor == "GL":
-            base_images = base_images.cuda(non_blocking=True)
-            base_labels = base_labels.cuda(non_blocking=True)
-            label_matrix = nn.functional.one_hot(base_labels, num_classes=10).float()
+            # Concatenate base + current test images, then compute features once
+            images_cat = torch.cat((base_images, images), dim=0)
+            _, features = model(images_cat)
+            pred_all = lap(features, label_matrix, opt.temp, opt.epsilon)
 
-            images = torch.cat((base_images, images), dim=0)  # Put the base images on top of unlabel images
-            _, features = model(images)
-
-            pred = lap(features, label_matrix, opt.temp, opt.epsilon)
-        elif predictor == 'MLP':
+            # Keep only the predictions corresponding to the current test batch
+            bsz = labels.shape[0]
+            pred = pred_all[-bsz:]
+        else:  # MLP
             pred, _ = model(images)
+
+        # Determine num_classes from the model output of this batch
+        num_classes = pred.shape[1]
+        k_eff = max(1, min(k, num_classes))  # clamp k
+
+        # Initialize per-class accumulators once we know num_classes
+        if per_class_correct is None:
+            per_class_correct = torch.zeros(num_classes, dtype=torch.long, device=labels.device)
+            per_class_total = torch.zeros(num_classes, dtype=torch.long, device=labels.device)
+
+        # Compute correctness flags for Top-1 or Top-k
+        if k_eff == 1:
+            pred_labels = torch.argmax(pred, dim=1)
+            correct_flags = (pred_labels == labels)
         else:
-            raise ValueError(predictor)
+            # True if the ground-truth label index is among the top-k indices
+            topk_vals, topk_idx = torch.topk(pred, k=k_eff, dim=1)
+            # Compare each row's label to its top-k indices
+            correct_flags = (topk_idx == labels.unsqueeze(1)).any(dim=1)
 
-        pred_labels = torch.argmax(pred, dim=1)
-        correct_num += torch.sum(torch.eq(pred_labels, labels)).item()
-        data_count += len(pred)
+        # Update overall counts
+        correct_count += int(correct_flags.sum().item())
+        total_count += pred.shape[0]
 
-    print('Test set: Accuracy for {} predictor: {}/{} ({:.2f}%)\n'.format(
-        predictor, correct_num, data_count,
-        100. * correct_num / data_count))
-    return 100. * correct_num / data_count
+        # Update per-class counts
+        for c in range(num_classes):
+            mask_c = (labels == c)
+            cnt_c = int(mask_c.sum().item())
+            if cnt_c > 0:
+                per_class_total[c] += cnt_c
+                per_class_correct[c] += int(correct_flags[mask_c].sum().item())
+
+    overall_acc = 100.0 * correct_count / max(1, total_count)
+
+    # Pretty name for Top-k
+    top_name = f"Top-{k if k <= num_classes else num_classes}"
+
+    print('Test set: Accuracy for {} predictor ({}): {}/{} ({:.2f}%)\n'.format(
+        predictor, top_name, correct_count, total_count, overall_acc))
+
+    if not return_per_class:
+        return overall_acc
+
+    # Convert per-class to NumPy percentages; classes with zero samples -> NaN
+    per_class_total_np = per_class_total.cpu().numpy()
+    per_class_correct_np = per_class_correct.cpu().numpy()
+    per_class_acc = np.full((per_class_total_np.shape[0],), np.nan, dtype=float)
+    nonzero_mask = per_class_total_np > 0
+    per_class_acc[nonzero_mask] = (
+        100.0 * per_class_correct_np[nonzero_mask] / per_class_total_np[nonzero_mask]
+    )
+
+    return overall_acc, per_class_acc
 
 
-def test_GL_NP(model, train_loader_ss, test_loader, opt, unlabel_train_loader=None):
+def test_GL_NP(model, train_loader_ss, test_loader, opt, unlabel_train_loader=None, return_per_class=False):
     """
-    Transform to numpy and do standard Laplace learning test
+    Transform to numpy and do standard Laplace learning test.
 
-    Added:
-      - Print the counts of:
-          * test data
-          * labeled training data
-          * unlabeled training data (0 if not provided)
-      - Support Top-k accuracy via `opt.top` (defaults to Top-1 if missing)
+    Additions:
+      - Print counts of test/labeled/unlabeled data.
+      - Support Top-k accuracy via `opt.top` (defaults to Top-1 if missing).
+      - New flag `return_per_class` (default: False). If True, also return per-class accuracy
+        as a NumPy array of shape (num_classes,), with percentages. Classes absent in the test
+        set are reported as np.nan.
+
+    Returns:
+      - If return_per_class is False:
+          acc_overall
+      - If return_per_class is True:
+          acc_overall, per_class_acc
     """
     import numpy as np
 
@@ -1162,7 +1241,7 @@ def test_GL_NP(model, train_loader_ss, test_loader, opt, unlabel_train_loader=No
 
     # Optional unlabeled data
     if unlabel_train_loader is not None:
-        unlabeled_train_data, unlabeled_train_label_new = loader_to_numpy(unlabel_train_loader, opt, model)
+        unlabeled_train_data, _ = loader_to_numpy(unlabel_train_loader, opt, model)
         unlabeled_count = len(unlabeled_train_data)
         all_data = np.concatenate((train_data, unlabeled_train_data, test_data), axis=0)
     else:
@@ -1181,28 +1260,28 @@ def test_GL_NP(model, train_loader_ss, test_loader, opt, unlabel_train_loader=No
     # Determine Top-k setting; default to Top-1 if opt.top is missing
     k = int(getattr(opt, 'top', 1))
     num_classes = U.shape[1]
-    # Clamp k to a valid range [1, num_classes]
-    k = max(1, min(k, num_classes))
+    k = max(1, min(k, num_classes))  # clamp to [1, num_classes]
 
     # Slice out test logits (the last `test_count` rows correspond to test samples)
     U_test = U[-test_count:]
 
-    # Compute Top-k predictions and accuracy
+    # Compute predictions and overall correctness flags for Top-1 or Top-k
     if k == 1:
-        # Standard Top-1
         pred = np.argmax(U_test, axis=1)
-        correct_num = int(np.sum(pred == test_label))
+        correct_flags = (pred == test_label)
+        correct_num = int(np.sum(correct_flags))
     else:
-        # Top-k: check if ground-truth is among the top-k scores for each sample
-        # Use argpartition for efficiency (unsorted top-k indices), then membership test
         kth = U_test.shape[1] - k  # index to partition at (keeps k largest in the tail)
         topk_idx = np.argpartition(U_test, kth=kth, axis=1)[:, -k:]  # shape (N_test, k)
-        # Row-wise membership: label i is correct if test_label[i] in topk_idx[i]
-        correct_flags = [test_label[i] in topk_idx[i] for i in range(test_count)]
+        correct_flags = np.fromiter(
+            (test_label[i] in topk_idx[i] for i in range(test_count)),
+            count=test_count,
+            dtype=bool
+        )
         correct_num = int(np.sum(correct_flags))
 
     total_test_num = test_count
-    acc = 100.0 * correct_num / total_test_num
+    acc_overall = 100.0 * correct_num / max(1, total_test_num)
 
     # Pretty name for Top-k
     top_name = f"Top-{k}"
@@ -1213,10 +1292,22 @@ def test_GL_NP(model, train_loader_ss, test_loader, opt, unlabel_train_loader=No
         f'  Test samples       : {test_count}\n'
         f'  Labeled train      : {labeled_count}\n'
         f'  Unlabeled train    : {unlabeled_count}\n'
-        f'  {top_name} Accuracy : {correct_num}/{total_test_num} ({acc:.2f}%)\n'
+        f'  {top_name} Accuracy : {correct_num}/{total_test_num} ({acc_overall:.2f}%)\n'
     )
 
-    return acc
+    if not return_per_class:
+        return acc_overall
+
+    # Compute per-class accuracy (percent). Use np.nan for classes not present in test set.
+    per_class_acc = np.full((num_classes,), np.nan, dtype=float)
+    for c in range(num_classes):
+        mask = (test_label == c)
+        denom = int(np.sum(mask))
+        if denom > 0:
+            per_class_acc[c] = 100.0 * float(np.sum(correct_flags[mask])) / denom
+
+    return acc_overall, per_class_acc
+
 
 
 

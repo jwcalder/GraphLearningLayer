@@ -35,16 +35,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--models", type=str, default="vgg11,vgg13,resnet20,resnet32,resnet44,resnet56,resnet110,resnet18,preactresnet18",
                    help="Comma-separated list of model names.")
     p.add_argument("--batch_sizes", type=str, default="1250",
-                   help="Comma-separated list of batch sizes (ints).")
+                   help="Comma-separated list of batch sizes.")
     p.add_argument("--num_trains", type=str, default="1000,10000,None",
-                   help="Comma-separated list of num_train (ints).")
+                   help="Comma-separated list of num_train.")
     p.add_argument("--root", type=str, default="save",
                    help="Root directory that contains SupTrain_* folders. Default: ../save")
-    p.add_argument("--tail_k", type=int, default=20,
+    p.add_argument("--tail_k", type=int, default=4,
                    help="How many last values to average/std from test_acc_record. ")
     p.add_argument("--strict", action="store_true",
                    help="If set, raise error on missing files/keys; otherwise skip with warnings.")
-    p.add_argument("--csv_out", type=str, default="fullysup_eval_summary.csv",
+    p.add_argument("--csv_out", type=str, default="script_results/fullysup_eval_summary.csv",
                    help="Optional path to save results as CSV. If empty, do not save.")
     return p.parse_args()
 
@@ -80,9 +80,24 @@ def tail_mean_std(values: Sequence[float], k: int) -> Tuple[float, float, int]:
     tail = v[-k:]
     return float(np.mean(tail)), float(np.std(tail, ddof=0)), int(k)
 
+def maybe_cd_up_if_no_save(strict: bool = False) -> None:
+    """If no 'save' folder exists in current directory, change directory to parent."""
+    try:
+        if not Path("save").is_dir():
+            os.chdir("..")
+            print("# 'save' not found in current directory; moved up one level.")
+    except Exception as e:
+        if strict:
+            raise
+        print(f"# [WARN] Failed to change directory upward: {e}")
+
 def main() -> None:
     # Parse args
     args = parse_args()
+
+    # Ensure we are in a directory where 'save' exists; otherwise go up one level.
+    # This check is based on the current working directory before resolving args.root.
+    maybe_cd_up_if_no_save(strict=args.strict)
 
     datasets = split_list(args.datasets, str)
     models = split_list(args.models, str)
